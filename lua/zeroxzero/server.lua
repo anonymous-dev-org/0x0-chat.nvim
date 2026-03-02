@@ -40,10 +40,13 @@ local function start_server(callback)
   table.insert(args, "--port")
   table.insert(args, tostring(cfg.port))
 
+  local child_env = vim.fn.environ()
+  child_env.ZEROXZERO_CALLER = "neovim"
+
   M._process = vim.system(args, {
     detach = true,
     text = true,
-    env = { ZEROXZERO_CALLER = "neovim" },
+    env = child_env,
   }, function()
     vim.schedule(function()
       M._process = nil

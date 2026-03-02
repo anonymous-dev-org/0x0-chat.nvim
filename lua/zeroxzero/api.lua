@@ -290,4 +290,73 @@ function M.get_providers(callback)
   M.get("/provider", callback)
 end
 
+-- TUI bridge endpoints
+
+---@param text string
+---@param callback fun(err?: string)
+function M.append_prompt(text, callback)
+  M.post("/tui/append-prompt", { text = text }, function(err, response)
+    if err then
+      callback(err)
+      return
+    end
+    if not response or response.status ~= 200 then
+      callback("server error: " .. tostring(response and response.status))
+      return
+    end
+    callback(nil)
+  end)
+end
+
+---@param session_id string
+---@param callback fun(err?: string)
+function M.select_session(session_id, callback)
+  M.post("/tui/select-session", { sessionID = session_id }, function(err, response)
+    if err then
+      callback(err)
+      return
+    end
+    if not response or response.status ~= 200 then
+      callback("server error: " .. tostring(response and response.status))
+      return
+    end
+    callback(nil)
+  end)
+end
+
+---@param command string
+---@param callback fun(err?: string)
+function M.execute_command(command, callback)
+  M.post("/tui/execute-command", { command = command }, function(err, response)
+    if err then
+      callback(err)
+      return
+    end
+    if not response or response.status ~= 200 then
+      callback("server error: " .. tostring(response and response.status))
+      return
+    end
+    callback(nil)
+  end)
+end
+
+-- Diff endpoint
+
+---@param session_id string
+---@param message_id string
+---@param callback fun(err?: string, diffs?: table[])
+function M.get_diff(session_id, message_id, callback)
+  M.get("/session/" .. session_id .. "/diff?messageID=" .. message_id, function(err, response)
+    if err then
+      callback(err)
+      return
+    end
+    if not response or response.status ~= 200 then
+      callback("server error: " .. tostring(response and response.status))
+      return
+    end
+    callback(nil, response.body or {})
+  end)
+end
+
 return M

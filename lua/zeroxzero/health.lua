@@ -37,7 +37,7 @@ function M.check()
     local port = config.current.port
     vim.health.ok("Connected to 0x0 server on port " .. port)
   else
-    vim.health.info("Not connected to 0x0 server (use :ZeroToggle to connect)")
+    vim.health.info("Not connected to 0x0 server (use :ZeroSend or :ZeroInlineEdit to connect)")
   end
 end
 

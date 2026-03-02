@@ -10,7 +10,7 @@ local function relative_path(bufnr)
     return nil
   end
   local cwd = vim.fn.getcwd()
-  if path:sub(1, #cwd) == cwd then
+  if path:sub(1, #cwd) == cwd and path:sub(#cwd + 1, #cwd + 1) == "/" then
     return path:sub(#cwd + 2) -- +2 to skip the trailing /
   end
   return vim.fn.fnamemodify(path, ":~:.")

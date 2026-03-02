@@ -11,42 +11,36 @@ function M.setup(opts)
   -- Statusline setup
   require("zeroxzero.ui.statusline")._setup()
 
-  -- Highlights
-  require("zeroxzero.render").setup_highlights()
+  -- Highlights for inline edit
   vim.api.nvim_set_hl(0, "ZeroInlineWorking", { link = "DiffChange", default = true })
 
   -- Keymaps
-  if km.toggle and km.toggle ~= "" then
-    vim.keymap.set("n", km.toggle, function()
-      M.toggle()
-    end, { desc = "0x0: Toggle chat" })
+
+  if km.send and km.send ~= "" then
+    vim.keymap.set("n", km.send, function()
+      M.send()
+    end, { desc = "0x0: Send file to TUI" })
+    vim.keymap.set("v", km.send, function()
+      M.send_visual()
+    end, { desc = "0x0: Send selection to TUI" })
   end
 
-  if km.context and km.context ~= "" then
-    vim.keymap.set("n", km.context, function()
-      M.context()
-    end, { desc = "0x0: Add file to context" })
-    vim.keymap.set("v", km.context, function()
-      M.context_visual()
-    end, { desc = "0x0: Add selection to context" })
+  if km.send_message and km.send_message ~= "" then
+    vim.keymap.set({ "n", "v" }, km.send_message, function()
+      M.send_message()
+    end, { desc = "0x0: Send with message to TUI" })
   end
 
-  if km.session and km.session ~= "" then
-    vim.keymap.set("n", km.session, function()
-      M.session()
-    end, { desc = "0x0: Session picker" })
+  if km.diff and km.diff ~= "" then
+    vim.keymap.set("n", km.diff, function()
+      M.diff()
+    end, { desc = "0x0: Review diff" })
   end
 
   if km.interrupt and km.interrupt ~= "" then
     vim.keymap.set("n", km.interrupt, function()
       M.interrupt()
     end, { desc = "0x0: Interrupt" })
-  end
-
-  if km.model and km.model ~= "" then
-    vim.keymap.set("n", km.model, function()
-      M.model()
-    end, { desc = "0x0: Model picker" })
   end
 
   if km.inline_edit and km.inline_edit ~= "" then
@@ -68,49 +62,35 @@ function M.setup(opts)
   })
 end
 
--- Chat
+-- TUI bridge
 
-function M.toggle()
-  require("zeroxzero.chat").toggle()
+function M.send()
+  require("zeroxzero.tui").send_file()
 end
 
--- Context
-
-function M.context()
-  local context = require("zeroxzero.context")
-  local ref = context.file_ref()
-  if not ref then
-    vim.notify("0x0: no file open", vim.log.levels.WARN)
-    return
-  end
-  require("zeroxzero.chat").add_context(ref)
+function M.send_visual()
+  require("zeroxzero.tui").send_selection()
 end
 
-function M.context_visual()
-  local context = require("zeroxzero.context")
-  vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("<Esc>", true, false, true), "x", false)
-  local ref = context.file_ref(nil, { include_selection = true })
-  if not ref then
-    vim.notify("0x0: no file open", vim.log.levels.WARN)
-    return
-  end
-  require("zeroxzero.chat").add_context(ref)
+function M.send_message()
+  require("zeroxzero.tui").send_with_message()
 end
 
--- Session
+-- Diff review
 
-function M.session()
-  require("zeroxzero.ui.picker").session_picker()
+function M.diff()
+  require("zeroxzero.diff").review()
 end
+
+-- Interrupt
 
 function M.interrupt()
-  require("zeroxzero.chat").interrupt()
-end
-
--- Model
-
-function M.model()
-  require("zeroxzero.ui.picker").model_picker()
+  local api = require("zeroxzero.api")
+  api.execute_command("session_interrupt", function(err)
+    if err then
+      vim.notify("0x0: " .. err, vim.log.levels.ERROR)
+    end
+  end)
 end
 
 -- Inline edit

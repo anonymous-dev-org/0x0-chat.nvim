@@ -32,8 +32,8 @@ function M._setup()
   end)
 
   sse.on("session.updated", function(props)
-    if props and props.title then
-      M._session_title = props.title
+    if props and props.info and props.info.title then
+      M._session_title = props.info.title
     end
   end)
 
@@ -84,14 +84,8 @@ function M.get()
 
   local parts = { "0x0" }
 
-  -- Show busy status, filtered to active session if available
-  local chat_ok, chat = pcall(require, "zeroxzero.chat")
-  local active_session = chat_ok and chat._session_id or nil
-
-  if active_session and _busy[active_session] then
-    local phase = _phase[active_session] or "thinking"
-    table.insert(parts, _frames[_frame] .. " " .. phase)
-  elseif next(_busy) then
+  -- Show busy status for any active session
+  if next(_busy) then
     local session_id = next(_busy)
     local phase = _phase[session_id] or "thinking"
     table.insert(parts, _frames[_frame] .. " " .. phase)

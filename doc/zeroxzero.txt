@@ -1,4 +1,4 @@
-*zeroxzero.txt*    Neovim plugin for 0x0 AI coding assistant
+*zeroxzero.txt*    Neovim companion for 0x0 AI coding assistant
 
 ==============================================================================
 CONTENTS                                              *zeroxzero-contents*
@@ -8,22 +8,20 @@ CONTENTS                                              *zeroxzero-contents*
   3. Configuration .......................... |zeroxzero-config|
   4. Commands ............................... |zeroxzero-commands|
   5. Keymaps ................................ |zeroxzero-keymaps|
-  6. Chat Window ............................ |zeroxzero-chat|
-  7. Statusline ............................. |zeroxzero-statusline|
-  8. Health Check ........................... |zeroxzero-health|
+  6. Statusline ............................. |zeroxzero-statusline|
+  7. Health Check ........................... |zeroxzero-health|
 
 ==============================================================================
 1. INTRODUCTION                                       *zeroxzero-intro*
 
-0x0.nvim is a Neovim plugin that integrates with the 0x0 AI coding
-assistant. It provides a native Neovim chat experience — a floating
-window with streaming responses, foldable tool output, `vim.ui.input`
-for prompts, and `vim.ui.select` for permissions. No terminal buffer.
-Full vim motions and folds.
+0x0.nvim is a Neovim companion for the 0x0 AI coding assistant. The TUI
+is the brain. Neovim is the hands. This plugin bridges the two — send
+file context to the TUI, review diffs natively in vimdiff, and make
+inline code edits without leaving your editor.
 
 The plugin connects to the 0x0-server daemon via HTTP and SSE for
-real-time message streaming, permission dialogs, question dialogs,
-file reload events, and toast notifications.
+permission dialogs, question dialogs, file reload events, toast
+notifications, and statusline updates.
 
 ==============================================================================
 2. SETUP                                              *zeroxzero-setup*
@@ -65,21 +63,11 @@ Default configuration: >lua
     port = 4096,                    -- Server port
     hostname = "127.0.0.1",         -- Server hostname
     auto_start = true,              -- Start server if not running
-    chat = {
-      width = 0.5,                  -- Fraction of editor width (0-1)
-                                    -- or absolute columns (>1)
-      height = 0.8,                 -- Fraction of editor height (0-1)
-                                    -- or absolute rows (>1)
-      border = "rounded",           -- Neovim border style
-      fold_tools = true,            -- Auto-fold completed tool output
-      show_thinking = false,        -- Show reasoning/thinking blocks
-    },
     keymaps = {
-      toggle = "<leader>0",         -- Toggle chat window
-      context = "<leader>0f",       -- Add file (n) or selection (v)
-      session = "<leader>0s",       -- Session picker
+      send = "<leader>0s",          -- Send file (n) or selection (v) to TUI
+      send_message = "<leader>0S",  -- Send context + message to TUI
+      diff = "<leader>0d",          -- Review diffs in vimdiff
       interrupt = "<leader>0i",     -- Interrupt current response
-      model = "<leader>0m",         -- Model picker
       inline_edit = "<leader>0e",   -- Inline edit
     },
     auth = nil,                     -- { username = "...", password = "..." }
@@ -91,23 +79,21 @@ To disable a keymap, set it to empty string in setup.
 ==============================================================================
 4. COMMANDS                                           *zeroxzero-commands*
 
-  :ZeroToggle                                         *:ZeroToggle*
-    Toggle chat window visibility (starts server if needed).
+  :ZeroSend                                           *:ZeroSend*
+    Send current file reference to the TUI prompt.
+    In visual mode, sends the selection with line references.
 
-  :ZeroContext                                        *:ZeroContext*
-    Add context to the next prompt. In normal mode, adds the
-    current file. In visual mode, adds the selection.
+  :ZeroSendMessage                                    *:ZeroSendMessage*
+    Send file/selection context plus a typed message to the TUI
+    prompt. Opens vim.ui.input for the message.
 
-  :ZeroSession                                        *:ZeroSession*
-    Open session picker. Lists existing sessions and a
-    "New session" option. Creates a new session directly
-    if no sessions exist.
+  :ZeroDiff                                           *:ZeroDiff*
+    Review file diffs from the latest completed session in native
+    vimdiff splits. If multiple files were changed, opens a picker.
+    If multiple sessions exist, opens a session picker first.
 
   :ZeroInterrupt                                      *:ZeroInterrupt*
     Interrupt the current response.
-
-  :ZeroModel                                          *:ZeroModel*
-    Open model picker (lists all providers and models).
 
   :ZeroInlineEdit                                     *:ZeroInlineEdit*
     Inline edit at cursor position or visual selection.
@@ -119,69 +105,15 @@ To disable a keymap, set it to empty string in setup.
 
 Global keymaps (configurable via setup):
 
-  <leader>0      Normal      Toggle chat window
-  <leader>0f     Normal      Add current file to context
-  <leader>0f     Visual      Add selection to context
-  <leader>0s     Normal      Session picker
+  <leader>0s     Normal      Send file reference to TUI
+  <leader>0s     Visual      Send selection to TUI
+  <leader>0S     Normal/Vis  Send context + message to TUI
+  <leader>0d     Normal      Review diffs in vimdiff
   <leader>0i     Normal      Interrupt current response
-  <leader>0m     Normal      Model picker
   <leader>0e     Normal/Vis  Inline edit
 
-Chat buffer keymaps (hardcoded):
-
-  q              Close chat window
-  <CR>           New prompt
-  <C-c>          Interrupt current response
-  <Tab>          Cycle to next agent (per-prompt)
-  <S-Tab>        Cycle to previous agent (per-prompt)
-  za             Toggle fold (tool output)
-  zM             Fold all
-  zR             Unfold all
-
 ==============================================================================
-6. CHAT WINDOW                                        *zeroxzero-chat*
-
-The chat window is a native Neovim floating buffer with:
-
-- Streaming responses — text appears as the model generates it
-- Foldable tool output — tool invocations fold into single lines
-  with status icons (✔ success, ✘ error, ▶ running)
-- Permission dialogs — vim.ui.select for allow/reject decisions
-- Question dialogs — multi-step vim.ui.select/vim.ui.input
-- Auto-scroll — follows output unless you scroll up
-- Session switching — load history from any session
-
-Chat buffer format: >
-
-  ────────────────────────────────────────────────────
-   You
-  ────────────────────────────────────────────────────
-  fix the bug in auth.ts
-
-  ────────────────────────────────────────────────────
-   Assistant (claude-sonnet-4-6)
-  ────────────────────────────────────────────────────
-
-  I'll fix the authentication bug.
-
-  ✔ edit src/auth.ts [+5/-3]
-  │ @@ -10,5 +10,7 @@
-  │  function auth() {
-  │ -  return false
-  │ +  return true
-  │  }
-
-  ✔ bash npm test
-  │ PASS src/auth.test.ts
-
-  The tests pass now.
-<
-
-Tool output lines prefixed with │ are foldable. When fold_tools
-is enabled (default), completed tool blocks auto-fold.
-
-==============================================================================
-7. STATUSLINE                                         *zeroxzero-statusline*
+6. STATUSLINE                                         *zeroxzero-statusline*
 
 Add 0x0 status to your statusline: >lua
   -- lualine example
@@ -196,7 +128,7 @@ Returns a string with connection status, animated spinner when busy,
 and current session title. Returns empty string when not connected.
 
 ==============================================================================
-8. HEALTH CHECK                                       *zeroxzero-health*
+7. HEALTH CHECK                                       *zeroxzero-health*
 
 Run `:checkhealth zeroxzero` to verify your setup:
   - Neovim >= 0.10

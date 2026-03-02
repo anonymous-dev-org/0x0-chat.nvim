@@ -1,8 +1,8 @@
 # 0x0.nvim
 
-Neovim plugin for the [0x0](https://github.com/anonymous-dev-org/0x0) AI coding assistant.
+Neovim companion for the [0x0](https://github.com/anonymous-dev-org/0x0) AI coding assistant.
 
-Native Neovim chat experience — floating window with streaming responses, foldable tool output, `vim.ui.input` for prompts, and `vim.ui.select` for permissions. No terminal buffer. Full vim motions and folds.
+The TUI is the brain. Neovim is the hands. This plugin bridges the two — send file context to the TUI, review diffs natively in vimdiff, and make inline code edits without leaving your editor.
 
 All commands, agents, and skills are defined in your `config.yaml` and `.zeroxzero/` directory — the plugin fetches them from the server at runtime.
 
@@ -31,7 +31,7 @@ export ANTHROPIC_API_KEY="sk-ant-..."
 }
 ```
 
-3. Open Neovim and press `<leader>0` to open the chat window.
+3. Start the TUI in a terminal, then use `<leader>0s` in Neovim to send the current file to the TUI prompt.
 
 ## Installation
 
@@ -63,98 +63,59 @@ require("zeroxzero").setup({
   port = 4096,                    -- Server port
   hostname = "127.0.0.1",
   auto_start = true,              -- Start server if not running
-  chat = {
-    width = 0.5,                  -- Fraction of editor width (0-1) or absolute columns
-    height = 0.8,                 -- Fraction of editor height (0-1) or absolute rows
-    border = "rounded",           -- Neovim border style
-    fold_tools = true,            -- Auto-fold completed tool output
-    show_thinking = false,        -- Show reasoning/thinking blocks
-  },
   keymaps = {
-    toggle = "<leader>0",         -- Toggle chat window
-    context = "<leader>0f",       -- Add file (n) or selection (v)
-    session = "<leader>0s",       -- Session picker
+    send = "<leader>0s",          -- Send file (n) or selection (v) to TUI
+    send_message = "<leader>0S",  -- Send context + message to TUI
+    diff = "<leader>0d",          -- Review diffs from latest session
     interrupt = "<leader>0i",     -- Interrupt current response
-    model = "<leader>0m",         -- Model picker
-    inline_edit = "<leader>0e",   -- Inline edit
+    inline_edit = "<leader>0e",   -- Inline edit at cursor/selection
   },
 })
 ```
 
 ## Keymaps
 
-### Global
-
 | Keymap | Mode | Action |
 |--------|------|--------|
-| `<leader>0` | n | Toggle chat window |
-| `<leader>0f` | n,v | Add context (file in normal, selection in visual) |
-| `<leader>0s` | n | Session picker |
+| `<leader>0s` | n | Send current file reference to TUI prompt |
+| `<leader>0s` | v | Send selection with file reference to TUI prompt |
+| `<leader>0S` | n,v | Send context + typed message to TUI prompt |
+| `<leader>0d` | n | Review file diffs from latest session in vimdiff |
 | `<leader>0i` | n | Interrupt current response |
-| `<leader>0m` | n | Model picker |
 | `<leader>0e` | n,v | Inline edit |
-
-### Chat Buffer
-
-| Key | Action |
-|-----|--------|
-| `q` | Close chat window |
-| `<CR>` | New prompt |
-| `<C-c>` | Interrupt current response |
-| `<Tab>` | Cycle to next agent (per-prompt) |
-| `<S-Tab>` | Cycle to previous agent (per-prompt) |
-| `za` | Toggle fold (tool output) |
-| `zM` | Fold all |
-| `zR` | Unfold all |
 
 ## Commands
 
 | Command | Description |
 |---------|-------------|
-| `:ZeroToggle` | Toggle chat window |
-| `:ZeroContext` | Add file (normal) or selection (visual) to context |
-| `:ZeroSession` | Session picker (with "New session" option) |
+| `:ZeroSend` | Send current file to TUI prompt |
+| `:ZeroSendMessage` | Send context + message to TUI prompt |
+| `:ZeroDiff` | Review diffs in vimdiff |
 | `:ZeroInterrupt` | Interrupt current response |
-| `:ZeroModel` | Model picker |
 | `:ZeroInlineEdit` | Inline edit at cursor/selection |
 
-## Chat Window
+## Features
 
-The chat window is a native Neovim floating buffer with:
+### Send Context to TUI
 
-- **Streaming responses** — text appears as the model generates it
-- **Foldable tool output** — tool invocations (file edits, bash, etc.) fold into single lines with status icons
+Select code in Neovim, press `<leader>0s`, and it lands in the TUI's prompt as a file reference with the selected lines. Press `<leader>0S` to also type a message.
+
+### Diff Review
+
+After the TUI's agent makes changes, press `<leader>0d` to fetch the file diffs and open them as native vimdiff splits. If multiple files were changed, you get a picker to choose which file to review.
+
+### Inline Edit
+
+Select code (or place cursor), press `<leader>0e`, type an instruction. The model edits the file directly — no chat, no context switching. The file auto-reloads when done.
+
+### SSE Integration
+
+The plugin maintains an SSE connection to the server for:
 - **Permission dialogs** — `vim.ui.select` for allow/reject decisions
 - **Question dialogs** — multi-step `vim.ui.select`/`vim.ui.input` sequences
-- **Auto-scroll** — follows output unless you scroll up
-- **Session switching** — load history from any session
-
-### Chat Buffer Format
-
-```
-────────────────────────────────────────────────────
- You
-────────────────────────────────────────────────────
-fix the bug in auth.ts
-
-────────────────────────────────────────────────────
- Assistant (claude-sonnet-4-6)
-────────────────────────────────────────────────────
-
-I'll fix the authentication bug.
-
-✔ edit src/auth.ts [+5/-3]
-│ @@ -10,5 +10,7 @@
-│  function auth() {
-│ -  return false
-│ +  return true
-│  }
-
-✔ bash npm test
-│ PASS src/auth.test.ts
-
-The tests pass now.
-```
+- **File auto-reload** — buffers update when the agent edits files
+- **Toast notifications** — `vim.notify` for server messages
+- **Statusline** — animated spinner when the agent is working
 
 ## Statusline
 
@@ -176,9 +137,9 @@ sections = {
 ## How It Works
 
 1. **Connect**: Checks if `0x0-server` is running on port 4096. Starts it in the background if needed.
-2. **Stream**: Opens SSE connection to `GET /event` for real-time message streaming.
-3. **Prompt**: Sends messages via `POST /session/:id/prompt_async` (non-blocking).
-4. **Render**: `message.part.updated` SSE events stream text deltas and tool results into the chat buffer.
-5. **Interact**: Permission and question dialogs appear as native `vim.ui.select` overlays.
+2. **Stream**: Opens SSE connection to `GET /event` for real-time permission/question/file-edit events.
+3. **Send**: Sends context to the TUI via `POST /tui/append-prompt`.
+4. **Diff**: Fetches diffs via `GET /session/:id/diff` and opens native vimdiff splits.
+5. **Inline Edit**: Creates a temporary session, sends the edit via `POST /session/:id/message`, auto-reloads the file.
 
 All requests include an `x-zeroxzero-directory` header so the server routes them to the correct project instance.
