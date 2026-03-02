@@ -55,7 +55,9 @@ local function _run(ctx, instruction)
       vim.notify("0x0: editing\xe2\x80\xa6", vim.log.levels.INFO)
 
       api.send_message(session_id, _build_prompt(ctx, instruction), function(send_err)
-        vim.api.nvim_buf_clear_namespace(ctx.bufnr, _ns, 0, -1)
+        if vim.api.nvim_buf_is_valid(ctx.bufnr) then
+          vim.api.nvim_buf_clear_namespace(ctx.bufnr, _ns, 0, -1)
+        end
         permission.unregister_inline_session(session_id)
         api.delete_session(session_id)
         if send_err then

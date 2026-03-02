@@ -148,7 +148,7 @@ function M.health(callback)
 end
 
 function M.get_sessions(callback)
-  M.get("/session/", callback)
+  M.get("/session", callback)
 end
 
 function M.get_session(session_id, callback)
@@ -163,13 +163,13 @@ function M.create_session(opts, callback)
     callback = opts
     opts = nil
   end
-  M.request("POST", "/session/", { body = opts }, function(err, response)
+  M.request("POST", "/session", { body = opts }, function(err, response)
     if err then
       callback(err)
       return
     end
     if not response or response.status ~= 200 or not response.body or not response.body.id then
-      callback("unexpected response from /session/: " .. vim.inspect(response))
+      callback("unexpected response from /session: " .. vim.inspect(response))
       return
     end
     callback(nil, response.body.id)
@@ -287,7 +287,7 @@ function M.get_skills(callback)
 end
 
 function M.get_providers(callback)
-  M.get("/provider/", callback)
+  M.get("/provider", callback)
 end
 
 return M

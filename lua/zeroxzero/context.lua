@@ -18,9 +18,11 @@ end
 
 ---Build a file reference string like @path.ts or @path.ts#L5-L10
 ---@param bufnr? integer
+---@param opts? {include_selection?: boolean}
 ---@return string?
-function M.file_ref(bufnr)
+function M.file_ref(bufnr, opts)
   bufnr = bufnr or 0
+  opts = opts or {}
   local rel = relative_path(bufnr)
   if not rel then
     return nil
@@ -29,7 +31,7 @@ function M.file_ref(bufnr)
   local ref = "@" .. rel
 
   -- Check for visual selection
-  local start_line, end_line = M.selection_range(bufnr)
+  local start_line, end_line = M.selection_range(bufnr, opts.include_selection)
   if start_line and end_line then
     if start_line == end_line then
       ref = ref .. "#L" .. start_line
@@ -43,9 +45,10 @@ end
 
 ---Get visual selection line range (1-based)
 ---@param bufnr? integer
+---@param include_marks? boolean when true, check '</'> marks even outside visual mode
 ---@return integer? start_line
 ---@return integer? end_line
-function M.selection_range(bufnr)
+function M.selection_range(bufnr, include_marks)
   bufnr = bufnr or 0
   local mode = vim.fn.mode()
   if mode == "v" or mode == "V" or mode == "\22" then
@@ -59,11 +62,13 @@ function M.selection_range(bufnr)
     return start_line, end_line
   end
 
-  -- Check marks from last visual selection
-  local start_pos = vim.api.nvim_buf_get_mark(bufnr, "<")
-  local end_pos = vim.api.nvim_buf_get_mark(bufnr, ">")
-  if start_pos[1] > 0 and end_pos[1] > 0 then
-    return start_pos[1], end_pos[1]
+  -- Only check marks from last visual selection when explicitly requested
+  if include_marks then
+    local start_pos = vim.api.nvim_buf_get_mark(bufnr, "<")
+    local end_pos = vim.api.nvim_buf_get_mark(bufnr, ">")
+    if start_pos[1] > 0 and end_pos[1] > 0 then
+      return start_pos[1], end_pos[1]
+    end
   end
 
   return nil, nil
@@ -74,7 +79,7 @@ end
 ---@return string?
 function M.selection_text(bufnr)
   bufnr = bufnr or 0
-  local start_line, end_line = M.selection_range(bufnr)
+  local start_line, end_line = M.selection_range(bufnr, true)
   if not start_line or not end_line then
     return nil
   end

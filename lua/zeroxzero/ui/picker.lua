@@ -21,8 +21,7 @@ function M.session_picker()
       local sessions = response and response.body or {}
 
       if type(sessions) ~= "table" or #sessions == 0 then
-        chat.new_session()
-        chat.open()
+        chat.new_session(function() chat.open() end)
         return
       end
 
@@ -44,8 +43,7 @@ function M.session_picker()
           return
         end
         if choice.id == nil then
-          chat.new_session()
-          chat.open()
+          chat.new_session(function() chat.open() end)
         else
           chat.switch_session(choice.id)
           chat.open()

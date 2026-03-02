@@ -2,6 +2,15 @@ local config = require("zeroxzero.config")
 
 local M = {}
 
+---Percent-encode a string for use in URL query parameters
+---@param str string
+---@return string
+local function url_encode(str)
+  return str:gsub("([^%w%-%.%_%~])", function(c)
+    return string.format("%%%02X", string.byte(c))
+  end)
+end
+
 ---@type vim.SystemObj?
 M._process = nil
 ---@type table<string, fun(properties: table)[]>
@@ -81,7 +90,7 @@ local function on_stdout(_, data)
         break
       end
 
-      local line = _buffer:sub(1, newline_pos - 1)
+      local line = _buffer:sub(1, newline_pos - 1):gsub("\r$", "")
       _buffer = _buffer:sub(newline_pos + 1)
 
       if line:sub(1, 6) == "data: " then
@@ -103,7 +112,7 @@ function M.connect()
 
   local cfg = config.current
   local cwd = vim.fn.getcwd()
-  local url = string.format("http://%s:%d/event?directory=%s", cfg.hostname, cfg.port, cwd)
+  local url = string.format("http://%s:%d/event?directory=%s", cfg.hostname, cfg.port, url_encode(cwd))
 
   local cmd = { "curl", "-s", "-N" }
 
@@ -138,6 +147,11 @@ function M.connect()
         M._reconnect_timer = vim.uv.new_timer()
         M._reconnect_timer:start(M._reconnect_delay, 0, function()
           vim.schedule(function()
+            if M._reconnect_timer then
+              M._reconnect_timer:stop()
+              M._reconnect_timer:close()
+              M._reconnect_timer = nil
+            end
             M._reconnect_delay = math.min(M._reconnect_delay * 2, M._max_reconnect_delay)
             M.connect()
           end)

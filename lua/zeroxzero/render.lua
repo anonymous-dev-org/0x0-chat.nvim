@@ -107,6 +107,13 @@ function M.text_delta(state, part, delta)
   end
 
   if not state.parts[part_id] then
+    -- Add spacer if previous line is non-empty (e.g. tool fold body)
+    -- to prevent text merging into the last fold line
+    local count = line_count(state)
+    local prev_line = vim.api.nvim_buf_get_lines(state.buf, count - 1, count, false)[1] or ""
+    if prev_line ~= "" then
+      append_lines(state, { "" })
+    end
     -- First delta for this part — mark start line
     state.parts[part_id] = {
       start_line = line_count(state),
@@ -145,6 +152,32 @@ function M.text_delta(state, part, delta)
   end
 end
 
+---Adjust line numbers for all parts and message headers after a line count change
+---@param state zeroxzero.RenderState
+---@param exclude_part_id string part to skip (the one being updated)
+---@param after_line integer 0-based line index; parts starting after this line are shifted
+---@param delta integer number of lines added (positive) or removed (negative)
+local function adjust_line_numbers(state, exclude_part_id, after_line, delta)
+  if delta == 0 then
+    return
+  end
+  for pid, info in pairs(state.parts) do
+    if pid ~= exclude_part_id then
+      if info.start_line > after_line then
+        info.start_line = info.start_line + delta
+      end
+      if info.end_line > after_line then
+        info.end_line = info.end_line + delta
+      end
+    end
+  end
+  for mid, ml in pairs(state.message_lines) do
+    if ml > after_line then
+      state.message_lines[mid] = ml + delta
+    end
+  end
+end
+
 ---Render or update a tool part
 ---@param state zeroxzero.RenderState
 ---@param part table the tool part from SSE
@@ -175,24 +208,25 @@ function M.tool_update(state, part)
   local header = icon .. " " .. title
 
   if not state.parts[part_id] then
-    -- New tool — append header + empty fold body
+    -- New tool — append spacer + header
     state.last_text_part_id = nil
     local start = line_count(state)
     append_lines(state, { "", header })
     vim.api.nvim_buf_add_highlight(state.buf, _ns, hl_group, line_count(state) - 1, 0, -1)
 
     state.parts[part_id] = {
-      start_line = start + 1, -- 1-indexed header line
-      end_line = line_count(state),
+      start_line = start + 1, -- 0-based index of the header line
+      end_line = start + 2,   -- past-the-end (header only, no body yet)
       type = "tool",
     }
   else
     -- Update existing tool
     local info = state.parts[part_id]
-    local header_idx = info.start_line - 1
-    vim.api.nvim_buf_set_lines(state.buf, header_idx, header_idx + 1, false, { header })
-    vim.api.nvim_buf_clear_namespace(state.buf, _ns, header_idx, header_idx + 1)
-    vim.api.nvim_buf_add_highlight(state.buf, _ns, hl_group, header_idx, 0, -1)
+
+    -- Replace the header line (start_line is the 0-based index of the header)
+    vim.api.nvim_buf_set_lines(state.buf, info.start_line, info.start_line + 1, false, { header })
+    vim.api.nvim_buf_clear_namespace(state.buf, _ns, info.start_line, info.start_line + 1)
+    vim.api.nvim_buf_add_highlight(state.buf, _ns, hl_group, info.start_line, 0, -1)
 
     if status == "completed" or status == "error" then
       -- Add output as fold body
@@ -204,17 +238,21 @@ function M.tool_update(state, part)
         for _, line in ipairs(output_lines) do
           table.insert(fold_lines, "\u{2502} " .. line)
         end
+        -- Count old body lines (everything between header and end_line)
+        local old_body_count = info.end_line - info.start_line - 1
         -- Remove old body lines if any
-        local old_end = info.end_line
-        if old_end > info.start_line then
-          vim.api.nvim_buf_set_lines(state.buf, info.start_line, old_end, false, {})
+        if old_body_count > 0 then
+          vim.api.nvim_buf_set_lines(state.buf, info.start_line + 1, info.end_line, false, {})
         end
-        -- Insert new body
-        vim.api.nvim_buf_set_lines(state.buf, info.start_line, info.start_line, false, fold_lines)
-        for i = info.start_line, info.start_line + #fold_lines - 1 do
+        -- Insert new body after the header
+        vim.api.nvim_buf_set_lines(state.buf, info.start_line + 1, info.start_line + 1, false, fold_lines)
+        for i = info.start_line + 1, info.start_line + #fold_lines do
           vim.api.nvim_buf_add_highlight(state.buf, _ns, "ZeroChatFoldLine", i, 0, -1)
         end
-        info.end_line = info.start_line + #fold_lines
+        local new_end = info.start_line + 1 + #fold_lines
+        local delta = new_end - info.end_line
+        info.end_line = new_end
+        adjust_line_numbers(state, part_id, info.start_line, delta)
       end
     end
   end

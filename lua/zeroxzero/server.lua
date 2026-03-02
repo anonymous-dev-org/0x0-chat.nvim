@@ -57,17 +57,29 @@ local function start_server(callback)
   -- Poll for readiness
   local tries = 0
   local max_tries = 20
+  local done = false
   local timer = vim.uv.new_timer()
   timer:start(250, 250, function()
+    if done then
+      return
+    end
     tries = tries + 1
     vim.schedule(function()
+      if done then
+        return
+      end
       health_check(function(ok)
+        if done then
+          return
+        end
         if ok then
+          done = true
           timer:stop()
           timer:close()
           M.connected = true
           callback(nil)
         elseif tries >= max_tries then
+          done = true
           timer:stop()
           timer:close()
           callback("server failed to start after " .. max_tries .. " attempts")

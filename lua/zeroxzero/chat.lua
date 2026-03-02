@@ -402,7 +402,8 @@ function M.switch_session(session_id)
 end
 
 ---Create a new session and clear the buffer
-function M.new_session()
+---@param callback? fun()
+function M.new_session(callback)
   server.ensure(function(err)
     if err then
       vim.notify("0x0: " .. err, vim.log.levels.ERROR)
@@ -415,6 +416,9 @@ function M.new_session()
       end
       if M._win and vim.api.nvim_win_is_valid(M._win) then
         vim.api.nvim_win_set_config(M._win, { title = M._session_title(), title_pos = "center" })
+      end
+      if callback then
+        callback()
       end
     end)
   end)
@@ -457,7 +461,7 @@ function M._on_part_updated(props)
   end
 
   local state = M._state
-  if not state then
+  if not state or not vim.api.nvim_buf_is_valid(state.buf) then
     return
   end
 
@@ -489,7 +493,7 @@ function M._on_message_updated(props)
   end
 
   -- Update assistant header with model info if we have it now
-  if info.role == "assistant" and info.modelID and M._state then
+  if info.role == "assistant" and info.modelID and M._state and vim.api.nvim_buf_is_valid(M._state.buf) then
     local header_line = M._state.message_lines[info.id]
     if header_line then
       local label = " Assistant (" .. info.modelID .. ")"
@@ -513,7 +517,7 @@ function M._on_message_updated(props)
   -- Handle errors
   if info.error then
     local state = M._state
-    if state then
+    if state and vim.api.nvim_buf_is_valid(state.buf) then
       local error_msg = info.error.properties and info.error.properties.message or info.error.name or "unknown error"
       render.error_message(state, error_msg)
       M._auto_scroll()

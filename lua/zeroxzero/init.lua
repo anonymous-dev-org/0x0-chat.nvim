@@ -89,7 +89,7 @@ end
 function M.context_visual()
   local context = require("zeroxzero.context")
   vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("<Esc>", true, false, true), "x", false)
-  local ref = context.file_ref()
+  local ref = context.file_ref(nil, { include_selection = true })
   if not ref then
     vim.notify("0x0: no file open", vim.log.levels.WARN)
     return
