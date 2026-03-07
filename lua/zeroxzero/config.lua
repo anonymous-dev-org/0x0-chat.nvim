@@ -14,6 +14,7 @@ local M = {}
 ---@field diff string
 ---@field interrupt string
 ---@field inline_edit string
+---@field inline_abort string
 
 ---@type zeroxzero.Config
 M.defaults = {
@@ -27,6 +28,7 @@ M.defaults = {
     diff = "<leader>0d",
     interrupt = "<leader>0i",
     inline_edit = "<leader>0e",
+    inline_abort = "<leader>0x",
   },
   auth = nil,
 }

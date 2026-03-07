@@ -13,6 +13,9 @@ function M.setup(opts)
 
   -- Highlights for inline edit
   vim.api.nvim_set_hl(0, "ZeroInlineWorking", { link = "DiffChange", default = true })
+  vim.api.nvim_set_hl(0, "ZeroInlineMarker", { link = "Comment", default = true })
+  vim.api.nvim_set_hl(0, "ZeroInlineOriginal", { link = "DiffDelete", default = true })
+  vim.api.nvim_set_hl(0, "ZeroInlineModified", { link = "DiffAdd", default = true })
 
   -- Keymaps
 
@@ -50,6 +53,12 @@ function M.setup(opts)
     vim.keymap.set("v", km.inline_edit, function()
       M.inline_edit_visual()
     end, { desc = "0x0: Inline edit with selection" })
+  end
+
+  if km.inline_abort and km.inline_abort ~= "" then
+    vim.keymap.set("n", km.inline_abort, function()
+      M.inline_abort()
+    end, { desc = "0x0: Abort inline edit" })
   end
 
   -- Autocommands
@@ -101,6 +110,10 @@ end
 
 function M.inline_edit_visual()
   require("zeroxzero.inline_edit").edit_visual()
+end
+
+function M.inline_abort()
+  require("zeroxzero.inline_edit").abort()
 end
 
 -- Statusline

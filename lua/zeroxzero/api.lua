@@ -340,6 +340,43 @@ function M.execute_command(command, callback)
   end)
 end
 
+-- Revert endpoints
+
+---Revert a session to a specific message
+---@param session_id string
+---@param message_id string
+---@param callback fun(err?: string, session?: table)
+function M.revert_session(session_id, message_id, callback)
+  M.post("/session/" .. session_id .. "/revert", { messageID = message_id }, function(err, response)
+    if err then
+      callback(err)
+      return
+    end
+    if not response or response.status ~= 200 then
+      callback("server error: " .. tostring(response and response.status))
+      return
+    end
+    callback(nil, response.body)
+  end)
+end
+
+---Unrevert a session (restore reverted changes on disk)
+---@param session_id string
+---@param callback fun(err?: string, session?: table)
+function M.unrevert_session(session_id, callback)
+  M.post("/session/" .. session_id .. "/unrevert", nil, function(err, response)
+    if err then
+      callback(err)
+      return
+    end
+    if not response or response.status ~= 200 then
+      callback("server error: " .. tostring(response and response.status))
+      return
+    end
+    callback(nil, response.body)
+  end)
+end
+
 -- Diff endpoint
 
 ---@param session_id string

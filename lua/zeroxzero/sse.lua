@@ -38,6 +38,22 @@ function M.on(event_type, handler)
   table.insert(M._handlers[event_type], handler)
 end
 
+---Remove a specific handler for an SSE event type
+---@param event_type string
+---@param handler fun(properties: table)
+function M.off(event_type, handler)
+  local handlers = M._handlers[event_type]
+  if not handlers then
+    return
+  end
+  for i = #handlers, 1, -1 do
+    if handlers[i] == handler then
+      table.remove(handlers, i)
+      return
+    end
+  end
+end
+
 ---Dispatch an event to registered handlers
 ---@param event_type string
 ---@param properties table
