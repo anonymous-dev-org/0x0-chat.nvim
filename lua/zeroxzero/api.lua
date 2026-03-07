@@ -396,4 +396,25 @@ function M.get_diff(session_id, message_id, callback)
   end)
 end
 
+---Get branch info for a session
+---@param session_id string
+---@param callback fun(err?: string, branch?: {name: string, base: string, worktree: string})
+function M.get_branch(session_id, callback)
+  M.get("/session/" .. session_id .. "/branch", function(err, response)
+    if err then
+      callback(err)
+      return
+    end
+    if not response or response.status == 404 then
+      callback(nil, nil)
+      return
+    end
+    if response.status ~= 200 then
+      callback("unexpected status " .. tostring(response.status))
+      return
+    end
+    callback(nil, response.body)
+  end)
+end
+
 return M

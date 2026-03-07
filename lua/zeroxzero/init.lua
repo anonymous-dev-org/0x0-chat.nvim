@@ -61,6 +61,15 @@ function M.setup(opts)
     end, { desc = "0x0: Abort inline edit" })
   end
 
+  -- User commands
+  vim.api.nvim_create_user_command("ZeroReview", function(cmd_opts)
+    local session_id = cmd_opts.args ~= "" and cmd_opts.args or nil
+    require("zeroxzero.diff").review({ session_id = session_id })
+  end, {
+    nargs = "?",
+    desc = "0x0: Review session changes in diffview",
+  })
+
   -- Autocommands
   local group = vim.api.nvim_create_augroup("zeroxzero", { clear = true })
   vim.api.nvim_create_autocmd("VimLeavePre", {

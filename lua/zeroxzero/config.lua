@@ -23,12 +23,12 @@ M.defaults = {
   hostname = "127.0.0.1",
   auto_start = true,
   keymaps = {
-    send = "<leader>0s",
-    send_message = "<leader>0S",
-    diff = "<leader>0d",
-    interrupt = "<leader>0i",
-    inline_edit = "<leader>0e",
-    inline_abort = "<leader>0x",
+    send = "",
+    send_message = "",
+    diff = "",
+    interrupt = "",
+    inline_edit = "",
+    inline_abort = "",
   },
   auth = nil,
 }
