@@ -32,6 +32,12 @@ local function parse_url(url)
   if scheme == "wss" then
     error("wss is not supported by the local TCP client")
   end
+
+  -- luv's raw TCP connect expects an IP address in some Neovim builds.
+  if host == "localhost" then
+    host = "127.0.0.1"
+  end
+
   return host, tonumber(port) or 80, path
 end
 
