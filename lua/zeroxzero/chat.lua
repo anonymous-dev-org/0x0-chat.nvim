@@ -32,6 +32,7 @@ local api = vim.api
 ---@field session zeroxzero.Session|nil
 ---@field changes zeroxzero.Changes|nil
 ---@field active_request string|nil
+---@field queued_requests table<string, boolean>
 ---@field assistant_line integer|nil
 
 ---@type zeroxzero.ChatState
@@ -40,6 +41,7 @@ local state = {
   session = nil,
   changes = nil,
   active_request = nil,
+  queued_requests = {},
   assistant_line = nil,
 }
 
@@ -253,6 +255,32 @@ local function append_queued_prompt(bufnr)
   append(bufnr, { "", "## User (queued)", "" })
 end
 
+local function clear_empty_trailing_prompt(bufnr)
+  local existing = api.nvim_buf_get_lines(bufnr, 0, -1, false)
+  if existing[#existing - 1] == "## User" and existing[#existing] == "" then
+    set_modifiable(bufnr, true)
+    api.nvim_buf_set_lines(bufnr, #existing - 2, #existing, false, {})
+  elseif existing[#existing - 1] == "## User (queued)" and existing[#existing] == "" then
+    set_modifiable(bufnr, true)
+    api.nvim_buf_set_lines(bufnr, #existing - 2, #existing, false, {})
+  elseif existing[#existing] == "## User" or existing[#existing] == "## User (queued)" then
+    set_modifiable(bufnr, true)
+    api.nvim_buf_set_lines(bufnr, #existing - 1, #existing, false, {})
+  end
+end
+
+local function has_queued_requests()
+  return next(state.queued_requests) ~= nil
+end
+
+local function begin_assistant_response(bufnr, request_id)
+  clear_empty_trailing_prompt(bufnr)
+  append(bufnr, { "", assistant_heading(), "" })
+  state.active_request = request_id
+  state.assistant_line = api.nvim_buf_line_count(bufnr)
+  append_queued_prompt(bufnr)
+end
+
 local function normalize_queued_prompt(bufnr)
   local lines = api.nvim_buf_get_lines(bufnr, 0, -1, false)
   for index = #lines, 1, -1 do
@@ -282,11 +310,10 @@ end
 local function send_turn(prompt)
   local bufnr = ensure_buffer()
 
-  append(bufnr, { "", assistant_heading(), "" })
-  state.assistant_line = api.nvim_buf_line_count(bufnr)
-  append_queued_prompt(bufnr)
+  local request_id = nil
+  begin_assistant_response(bufnr, request_id)
 
-  state.active_request = client.request({
+  request_id = client.request({
     type = "chat.turn",
     sessionId = state.session.id,
     prompt = prompt,
@@ -321,8 +348,10 @@ local function send_turn(prompt)
       end
       vim.defer_fn(function()
         if is_chat_buf(bufnr) then
-          normalize_queued_prompt(bufnr)
-          ensure_next_prompt(bufnr)
+          if not has_queued_requests() then
+            normalize_queued_prompt(bufnr)
+            ensure_next_prompt(bufnr)
+          end
         end
       end, 100)
     end,
@@ -348,6 +377,90 @@ local function send_turn(prompt)
       util.notify(err, vim.log.levels.ERROR)
     end,
   })
+  state.active_request = request_id
+end
+
+local function send_queued_turn(prompt)
+  local bufnr = ensure_buffer()
+  local started = false
+  local request_id = nil
+
+  local function ensure_started()
+    if started or not is_chat_buf(bufnr) then
+      return
+    end
+    started = true
+    state.queued_requests[request_id] = nil
+    begin_assistant_response(bufnr, request_id)
+  end
+
+  request_id = client.request({
+    type = "chat.turn",
+    sessionId = state.session.id,
+    prompt = prompt,
+  }, {
+    keep = true,
+    done_grace_ms = 5000,
+    close_on_changes = true,
+    ["user.queued"] = function(message)
+      state.queued_requests[request_id] = true
+      if state.session then
+        state.session.messages = message.messages or state.session.messages
+      end
+      mark_latest_queued_prompt_submitted(bufnr)
+    end,
+    ["assistant.delta"] = function(message)
+      ensure_started()
+      if not is_chat_buf(bufnr) then
+        return
+      end
+      set_modifiable(bufnr, true)
+      local line = state.assistant_line or api.nvim_buf_line_count(bufnr)
+      local current = api.nvim_buf_get_lines(bufnr, line - 1, line, false)[1] or ""
+      local chunks = util.split_lines(message.text or "")
+      if #chunks == 0 then
+        return
+      end
+      chunks[1] = current .. chunks[1]
+      api.nvim_buf_set_lines(bufnr, line - 1, line, false, chunks)
+      state.assistant_line = line + #chunks - 1
+      move_cursor_to_end(bufnr)
+    end,
+    ["assistant.done"] = function(message)
+      ensure_started()
+      state.active_request = nil
+      state.assistant_line = nil
+      state.queued_requests[request_id] = nil
+      if state.session then
+        state.session.messages = message.messages or state.session.messages
+      end
+      if message.summary and message.summary ~= "" then
+        append(bufnr, { "", "_Summary: " .. message.summary .. "_" })
+      end
+      vim.defer_fn(function()
+        if is_chat_buf(bufnr) and not has_queued_requests() then
+          normalize_queued_prompt(bufnr)
+          ensure_next_prompt(bufnr)
+        end
+      end, 100)
+    end,
+    ["changes.updated"] = append_change_summary,
+    ["cancelled"] = function()
+      state.active_request = nil
+      state.assistant_line = nil
+      state.queued_requests[request_id] = nil
+      normalize_queued_prompt(bufnr)
+      ensure_next_prompt(bufnr)
+    end,
+    ["run.status"] = function(message)
+      vim.b[bufnr].zeroxzero_status = message.status
+    end,
+    on_error = function(err)
+      state.queued_requests[request_id] = nil
+      util.notify(err, vim.log.levels.ERROR)
+    end,
+  })
+  state.queued_requests[request_id] = true
 end
 
 local function create_session(prompt)
@@ -396,6 +509,7 @@ function M.new()
   state.session = nil
   state.changes = nil
   state.active_request = nil
+  state.queued_requests = {}
   state.assistant_line = nil
   if is_chat_buf(state.bufnr) then
     api.nvim_buf_delete(state.bufnr, { force = true })
@@ -439,20 +553,8 @@ function M.submit()
     return
   end
 
-  if state.session and state.active_request then
-    client.request({
-      type = "chat.turn",
-      sessionId = state.session.id,
-      prompt = prompt,
-    }, {
-      ["user.queued"] = function(message)
-        state.session.messages = message.messages or state.session.messages
-        mark_latest_queued_prompt_submitted(bufnr)
-      end,
-      on_error = function(err)
-        util.notify(err, vim.log.levels.ERROR)
-      end,
-    })
+  if state.session and (state.active_request or has_queued_requests()) then
+    send_queued_turn(prompt)
   elseif state.session then
     send_turn(prompt)
   else
