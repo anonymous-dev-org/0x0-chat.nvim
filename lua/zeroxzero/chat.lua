@@ -406,7 +406,6 @@ local function send_turn(prompt)
       chunks[1] = current .. chunks[1]
       api.nvim_buf_set_lines(bufnr, line - 1, line, false, chunks)
       state.assistant_line = line + #chunks - 1
-      move_cursor_to_end(bufnr)
     end,
     ["assistant.done"] = function(message)
       state.active_request = nil
@@ -495,7 +494,6 @@ local function send_queued_turn(prompt)
       chunks[1] = current .. chunks[1]
       api.nvim_buf_set_lines(bufnr, line - 1, line, false, chunks)
       state.assistant_line = line + #chunks - 1
-      move_cursor_to_end(bufnr)
     end,
     ["assistant.done"] = function(message)
       ensure_started()
