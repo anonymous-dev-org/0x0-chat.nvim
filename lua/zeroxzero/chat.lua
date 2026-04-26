@@ -5,6 +5,10 @@ local util = require("zeroxzero.util")
 local M = {}
 
 local api = vim.api
+local USER_HEADING = "## User"
+local QUEUE_HEADING = "## Next message"
+local LEGACY_QUEUE_HEADING = "## User (queued)"
+local WORKING_LINE = "_Working... type below to queue another message._"
 
 ---@class zeroxzero.ChatMessage
 ---@field role "user"|"assistant"
@@ -115,7 +119,11 @@ local function is_model_heading(line)
 end
 
 local function is_user_heading(line)
-  return line == "## User" or line == "## User (queued)"
+  return line == USER_HEADING or line == QUEUE_HEADING or line == LEGACY_QUEUE_HEADING
+end
+
+local function is_empty_input_heading(line)
+  return line == USER_HEADING or line == QUEUE_HEADING or line == LEGACY_QUEUE_HEADING
 end
 
 local function ensure_buffer()
@@ -134,7 +142,7 @@ local function ensure_buffer()
   api.nvim_buf_set_lines(bufnr, 0, -1, false, {
     "# 0x0 Chat",
     "",
-    "## User",
+    USER_HEADING,
     "",
   })
 
@@ -182,7 +190,7 @@ local function render_session(bufnr)
   local messages = state.session and state.session.messages or {}
   for _, message in ipairs(messages) do
     if message.role == "user" then
-      table.insert(lines, "## User")
+      table.insert(lines, USER_HEADING)
     else
       table.insert(lines, assistant_heading())
     end
@@ -193,9 +201,54 @@ local function render_session(bufnr)
     table.insert(lines, "")
   end
 
-  table.insert(lines, "## User")
+  table.insert(lines, USER_HEADING)
   table.insert(lines, "")
   set_lines(bufnr, lines)
+end
+
+local function remove_existing_change_summary(bufnr)
+  local existing = api.nvim_buf_get_lines(bufnr, 0, -1, false)
+  for index = #existing, 1, -1 do
+    if existing[index] == "## Changes" then
+      local start = index
+      if existing[index - 1] == "" then
+        start = index - 1
+      end
+      set_modifiable(bufnr, true)
+      api.nvim_buf_set_lines(bufnr, start - 1, #existing, false, {})
+      return
+    end
+  end
+end
+
+local function remove_empty_trailing_input(bufnr)
+  local existing = api.nvim_buf_get_lines(bufnr, 0, -1, false)
+  local heading = nil
+  if is_empty_input_heading(existing[#existing - 1]) and existing[#existing] == "" then
+    heading = #existing - 1
+  elseif is_empty_input_heading(existing[#existing]) then
+    heading = #existing
+  end
+  if not heading then
+    return false
+  end
+
+  local start = heading
+  if existing[heading - 1] == "" and existing[heading - 2] == WORKING_LINE and existing[heading - 3] == "" then
+    start = heading - 3
+  end
+
+  set_modifiable(bufnr, true)
+  api.nvim_buf_set_lines(bufnr, start - 1, #existing, false, {})
+  return true
+end
+
+local function append_user_prompt(bufnr)
+  append(bufnr, { "", USER_HEADING, "" })
+end
+
+local function append_working_prompt(bufnr)
+  append(bufnr, { "", WORKING_LINE, "", QUEUE_HEADING, "" })
 end
 
 local function current_prompt(bufnr)
@@ -239,26 +292,8 @@ local function append_change_summary(message)
     return
   end
 
-  local existing = api.nvim_buf_get_lines(state.bufnr, 0, -1, false)
-  for index = #existing, 1, -1 do
-    if existing[index] == "## Changes" then
-      set_modifiable(state.bufnr, true)
-      api.nvim_buf_set_lines(state.bufnr, index - 2, #existing, false, {})
-      break
-    end
-  end
-
-  existing = api.nvim_buf_get_lines(state.bufnr, 0, -1, false)
-  if existing[#existing - 1] == "## User" and existing[#existing] == "" then
-    set_modifiable(state.bufnr, true)
-    api.nvim_buf_set_lines(state.bufnr, #existing - 2, #existing, false, {})
-  elseif existing[#existing - 1] == "## User (queued)" and existing[#existing] == "" then
-    set_modifiable(state.bufnr, true)
-    api.nvim_buf_set_lines(state.bufnr, #existing - 2, #existing, false, {})
-  elseif existing[#existing] == "## User" or existing[#existing] == "## User (queued)" then
-    set_modifiable(state.bufnr, true)
-    api.nvim_buf_set_lines(state.bufnr, #existing - 1, #existing, false, {})
-  end
+  remove_existing_change_summary(state.bufnr)
+  remove_empty_trailing_input(state.bufnr)
 
   local lines = { "", "## Changes" }
   if #state.changes.files == 0 then
@@ -271,9 +306,13 @@ local function append_change_summary(message)
     table.insert(lines, "Actions: :ZeroReview, :ZeroAcceptAll, :ZeroDiscardAll")
   end
   table.insert(lines, "")
-  table.insert(lines, "## User")
-  table.insert(lines, "")
   append(state.bufnr, lines)
+
+  if state.active_request or next(state.queued_requests) ~= nil then
+    append_working_prompt(state.bufnr)
+  else
+    append_user_prompt(state.bufnr)
+  end
 end
 
 local function ensure_next_prompt(bufnr)
@@ -283,21 +322,11 @@ local function ensure_next_prompt(bufnr)
       return
     end
   end
-  append(bufnr, { "", "## User", "" })
+  append_user_prompt(bufnr)
 end
 
 local function clear_empty_trailing_prompt(bufnr)
-  local existing = api.nvim_buf_get_lines(bufnr, 0, -1, false)
-  if existing[#existing - 1] == "## User" and existing[#existing] == "" then
-    set_modifiable(bufnr, true)
-    api.nvim_buf_set_lines(bufnr, #existing - 2, #existing, false, {})
-  elseif existing[#existing - 1] == "## User (queued)" and existing[#existing] == "" then
-    set_modifiable(bufnr, true)
-    api.nvim_buf_set_lines(bufnr, #existing - 2, #existing, false, {})
-  elseif existing[#existing] == "## User" or existing[#existing] == "## User (queued)" then
-    set_modifiable(bufnr, true)
-    api.nvim_buf_set_lines(bufnr, #existing - 1, #existing, false, {})
-  end
+  remove_empty_trailing_input(bufnr)
 end
 
 local function has_queued_requests()
@@ -309,17 +338,29 @@ local function begin_assistant_response(bufnr, request_id)
   append(bufnr, { "", assistant_heading(), "" })
   state.active_request = request_id
   state.assistant_line = api.nvim_buf_line_count(bufnr)
+  append_working_prompt(bufnr)
 end
 
 local function normalize_queued_prompt(bufnr)
   local lines = api.nvim_buf_get_lines(bufnr, 0, -1, false)
   for index = #lines, 1, -1 do
-    if lines[index] == "## User (queued)" then
+    if lines[index] == QUEUE_HEADING or lines[index] == LEGACY_QUEUE_HEADING then
+      local prompt = table.concat(vim.list_slice(lines, index + 1), "\n"):gsub("^%s+", ""):gsub("%s+$", "")
+      if prompt == "" then
+        remove_empty_trailing_input(bufnr)
+        ensure_next_prompt(bufnr)
+        return
+      end
+
       set_modifiable(bufnr, true)
-      api.nvim_buf_set_lines(bufnr, index - 1, index, false, { "## User" })
+      if lines[index - 1] == "" and lines[index - 2] == WORKING_LINE and lines[index - 3] == "" then
+        api.nvim_buf_set_lines(bufnr, index - 4, index, false, { USER_HEADING })
+      else
+        api.nvim_buf_set_lines(bufnr, index - 1, index, false, { USER_HEADING })
+      end
       return
     end
-    if lines[index] == "## User" or is_model_heading(lines[index]) then
+    if lines[index] == USER_HEADING or is_model_heading(lines[index]) then
       return
     end
   end
@@ -328,9 +369,10 @@ end
 local function mark_latest_queued_prompt_submitted(bufnr)
   local lines = api.nvim_buf_get_lines(bufnr, 0, -1, false)
   for index = #lines, 1, -1 do
-    if lines[index] == "## User (queued)" then
+    if lines[index] == QUEUE_HEADING or lines[index] == LEGACY_QUEUE_HEADING then
       set_modifiable(bufnr, true)
-      api.nvim_buf_set_lines(bufnr, index - 1, index, false, { "## User" })
+      api.nvim_buf_set_lines(bufnr, index - 1, index, false, { USER_HEADING })
+      append_working_prompt(bufnr)
       return
     end
   end
