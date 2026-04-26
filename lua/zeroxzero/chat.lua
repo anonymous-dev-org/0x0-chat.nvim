@@ -470,6 +470,7 @@ local function create_session(prompt)
     repoRoot = root,
     provider = config.current.provider,
     model = config.current.model,
+    effort = config.current.effort,
   }, {
     ["session.created"] = function(message)
       state.session = message.session

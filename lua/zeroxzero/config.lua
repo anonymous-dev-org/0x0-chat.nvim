@@ -4,6 +4,7 @@ local M = {}
 ---@field server_url string
 ---@field provider? string
 ---@field model? string
+---@field effort? string
 ---@field chat_buffer_name string
 ---@field keymaps table<string, string|string[]|false>
 
@@ -12,6 +13,7 @@ M.defaults = {
   server_url = "http://localhost:4096",
   provider = nil,
   model = nil,
+  effort = nil,
   chat_buffer_name = "[0x0 Chat]",
   keymaps = {
     submit = { "<CR>", "<leader>as" },

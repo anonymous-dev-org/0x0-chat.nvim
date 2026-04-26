@@ -19,6 +19,7 @@ Neovim chat, inline edit, and review client for the local 0x0 server.
 - `:ZeroChatNew`
 - `:ZeroChatOpen <session-id>`
 - `:ZeroChatSubmit`
+- `:ZeroChatSettings`
 - `:ZeroInlineEdit`
 - `:ZeroReview`
 - `:ZeroAcceptAll`
@@ -37,3 +38,9 @@ Initialize provider keys once, then start the local background server:
 0x0 init
 0x0 server
 ```
+
+## Chat Settings
+
+Use `:ZeroChatSettings` to choose the chat provider, model, and effort.
+
+Settings apply to new chat sessions. Existing chat sessions keep the provider, model, and effort they were created with.

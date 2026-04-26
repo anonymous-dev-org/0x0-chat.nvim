@@ -26,6 +26,10 @@ function M.setup(opts)
     require("zeroxzero.chat").submit()
   end, { desc = "Submit current 0x0 chat prompt" })
 
+  vim.api.nvim_create_user_command("ZeroChatSettings", function()
+    require("zeroxzero.settings").open()
+  end, { desc = "Configure 0x0 chat" })
+
   vim.api.nvim_create_user_command("ZeroInlineEdit", function(command_opts)
     require("zeroxzero.inline").edit(command_opts)
   end, { range = true, desc = "Ask 0x0 for a one-shot inline edit" })
