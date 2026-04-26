@@ -94,8 +94,23 @@ local function choose_effort()
   end)
 end
 
+local function choose_position()
+  local positions = { "bottom", "right", "left", "top" }
+  vim.ui.select(positions, { prompt = "0x0 chat position" }, function(position)
+    if not position then
+      return
+    end
+    require("zeroxzero.chat").move(position)
+    notify_setting("position", position)
+  end)
+end
+
 function M.open()
   local actions = {
+    {
+      label = "Position: " .. tostring(config.current.chat_position or "bottom"),
+      run = choose_position,
+    },
     {
       label = "Provider / model: " .. tostring(config.current.provider or "server default") .. " / " .. tostring(
         config.current.model or "default"

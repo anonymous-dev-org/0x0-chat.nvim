@@ -6,6 +6,7 @@ local M = {}
 ---@field model? string
 ---@field effort? string
 ---@field chat_buffer_name string
+---@field chat_position "bottom"|"top"|"left"|"right"
 ---@field keymaps table<string, string|string[]|false>
 
 ---@type zeroxzero.Config
@@ -15,6 +16,7 @@ M.defaults = {
   model = nil,
   effort = nil,
   chat_buffer_name = "[0x0 Chat]",
+  chat_position = "bottom",
   keymaps = {
     submit = { "<CR>", "<leader>as" },
   },

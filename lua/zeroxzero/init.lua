@@ -30,6 +30,16 @@ function M.setup(opts)
     require("zeroxzero.settings").open()
   end, { desc = "Configure 0x0 chat" })
 
+  vim.api.nvim_create_user_command("ZeroChatMove", function(command_opts)
+    require("zeroxzero.chat").move(command_opts.args)
+  end, {
+    nargs = 1,
+    complete = function()
+      return { "bottom", "top", "left", "right" }
+    end,
+    desc = "Move the 0x0 chat panel",
+  })
+
   vim.api.nvim_create_user_command("ZeroInlineEdit", function(command_opts)
     require("zeroxzero.inline").edit(command_opts)
   end, { range = true, desc = "Ask 0x0 for a one-shot inline edit" })

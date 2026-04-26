@@ -87,6 +87,29 @@ local function assistant_heading()
   return "## Model"
 end
 
+local function split_command()
+  local position = config.current.chat_position or "bottom"
+  if position == "top" then
+    return "topleft split"
+  end
+  if position == "left" then
+    return "topleft vertical split"
+  end
+  if position == "right" then
+    return "botright vertical split"
+  end
+  return "botright split"
+end
+
+local function size_chat_window()
+  local position = config.current.chat_position or "bottom"
+  if position == "left" or position == "right" then
+    api.nvim_win_set_width(0, math.max(40, math.floor(vim.o.columns * 0.35)))
+  else
+    api.nvim_win_set_height(0, math.max(12, math.floor(vim.o.lines * 0.35)))
+  end
+end
+
 local function is_model_heading(line)
   return line == "## Assistant" or line == "## Model" or line:match("^## Model:") ~= nil
 end
@@ -490,13 +513,33 @@ function M.open()
   if existing then
     api.nvim_set_current_win(existing)
   else
-    vim.cmd("botright split")
+    vim.cmd(split_command())
     api.nvim_win_set_buf(0, bufnr)
-    api.nvim_win_set_height(0, math.max(12, math.floor(vim.o.lines * 0.35)))
+    size_chat_window()
   end
   api.nvim_buf_call(bufnr, function()
     vim.cmd("normal! G")
   end)
+end
+
+function M.move(position)
+  if position ~= "bottom" and position ~= "top" and position ~= "left" and position ~= "right" then
+    util.notify("Chat position must be one of: bottom, top, left, right", vim.log.levels.WARN)
+    return
+  end
+
+  config.current.chat_position = position
+  local bufnr = ensure_buffer()
+  local win = chat_win(bufnr)
+  if not win then
+    M.open()
+    return
+  end
+
+  api.nvim_set_current_win(win)
+  local command = ({ bottom = "wincmd J", top = "wincmd K", left = "wincmd H", right = "wincmd L" })[position]
+  vim.cmd(command)
+  size_chat_window()
 end
 
 function M.new()
