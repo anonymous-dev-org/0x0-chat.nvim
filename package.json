@@ -1,0 +1,6 @@
+{
+  "name": "@anonymous-dev/0x0-chat.nvim",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Neovim chat, inline edit, and review client for the local 0x0 server"
+}

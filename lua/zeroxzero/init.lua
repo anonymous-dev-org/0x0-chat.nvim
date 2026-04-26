@@ -1,62 +1,66 @@
+local config = require("zeroxzero.config")
+
 local M = {}
+
+local function complete_files(arglead)
+  return require("zeroxzero.util").file_candidates(arglead)
+end
 
 ---@param opts? table
 function M.setup(opts)
-  local config = require("zeroxzero.config")
   config.setup(opts)
 
-  local cfg = config.current
-  local km = cfg.keymaps
+  vim.api.nvim_create_user_command("ZeroChat", function()
+    require("zeroxzero.chat").open()
+  end, { desc = "Open 0x0 chat" })
 
-  -- Statusline setup
-  require("zeroxzero.ui.statusline")._setup()
+  vim.api.nvim_create_user_command("ZeroChatNew", function()
+    require("zeroxzero.chat").new()
+  end, { desc = "Start a new 0x0 chat" })
 
-  -- Keymaps
+  vim.api.nvim_create_user_command("ZeroChatOpen", function(command_opts)
+    require("zeroxzero.chat").open_session(command_opts.args)
+  end, { nargs = 1, desc = "Open an existing 0x0 chat session" })
 
-  if km.send and km.send ~= "" then
-    vim.keymap.set("n", km.send, function()
-      M.send()
-    end, { desc = "0x0: Send file to TUI" })
-    vim.keymap.set("v", km.send, function()
-      M.send_visual()
-    end, { desc = "0x0: Send selection to TUI" })
-  end
+  vim.api.nvim_create_user_command("ZeroChatSubmit", function()
+    require("zeroxzero.chat").submit()
+  end, { desc = "Submit current 0x0 chat prompt" })
 
-  if km.switch_session and km.switch_session ~= "" then
-    vim.keymap.set("n", km.switch_session, function()
-      M.switch_session()
-    end, { desc = "0x0: Switch pinned session" })
-  end
+  vim.api.nvim_create_user_command("ZeroInlineEdit", function(command_opts)
+    require("zeroxzero.inline").edit(command_opts)
+  end, { range = true, desc = "Ask 0x0 for a one-shot inline edit" })
 
-  -- Autocommands
-  local group = vim.api.nvim_create_augroup("zeroxzero", { clear = true })
-  vim.api.nvim_create_autocmd("VimLeavePre", {
-    group = group,
-    callback = function()
-      require("zeroxzero.server").stop()
-    end,
-  })
-end
+  vim.api.nvim_create_user_command("ZeroReview", function()
+    require("zeroxzero.review").open()
+  end, { desc = "Review 0x0 agent changes" })
 
--- TUI bridge
+  vim.api.nvim_create_user_command("ZeroAcceptAll", function()
+    require("zeroxzero.review").accept_all()
+  end, { desc = "Accept all 0x0 agent changes" })
 
-function M.send()
-  require("zeroxzero.tui").send_file()
-end
+  vim.api.nvim_create_user_command("ZeroDiscardAll", function()
+    require("zeroxzero.review").discard_all()
+  end, { desc = "Discard all 0x0 agent changes" })
 
-function M.send_visual()
-  require("zeroxzero.tui").send_selection()
-end
+  vim.api.nvim_create_user_command("ZeroAcceptFile", function(command_opts)
+    require("zeroxzero.review").accept_file(command_opts.args)
+  end, { nargs = 1, complete = complete_files, desc = "Accept a 0x0 agent file change" })
 
-function M.switch_session()
-  require("zeroxzero.tui").switch_session()
-end
+  vim.api.nvim_create_user_command("ZeroDiscardFile", function(command_opts)
+    require("zeroxzero.review").discard_file(command_opts.args)
+  end, { nargs = 1, complete = complete_files, desc = "Discard a 0x0 agent file change" })
 
--- Statusline
+  vim.api.nvim_create_user_command("ZeroChangesStatus", function()
+    require("zeroxzero.review").status()
+  end, { desc = "Refresh 0x0 agent change status" })
 
----@return string
-function M.statusline()
-  return require("zeroxzero.ui.statusline").get()
+  vim.api.nvim_create_user_command("ZeroCancel", function()
+    require("zeroxzero.chat").cancel()
+  end, { desc = "Cancel the active 0x0 run" })
+
+  vim.api.nvim_create_user_command("ZeroClose", function()
+    require("zeroxzero.client").close()
+  end, { desc = "Close the 0x0 websocket" })
 end
 
 return M

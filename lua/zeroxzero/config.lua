@@ -1,28 +1,19 @@
 local M = {}
 
 ---@class zeroxzero.Config
----@field cmd string server binary name or path
----@field port number server port (0 = auto-detect running server)
----@field hostname string
----@field auto_start boolean start server if not running
----@field keymaps zeroxzero.KeymapConfig
----@field auth? {username: string, password: string}
-
----@class zeroxzero.KeymapConfig
----@field send string
----@field switch_session string
+---@field server_url string
+---@field provider? string
+---@field model? string
+---@field chat_buffer_name string
+---@field keymaps table<string, string|false>
 
 ---@type zeroxzero.Config
 M.defaults = {
-  cmd = "0x0-server",
-  port = 4096,
-  hostname = "127.0.0.1",
-  auto_start = true,
-  keymaps = {
-    send = "",
-    switch_session = "",
-  },
-  auth = nil,
+  server_url = "http://localhost:4096",
+  provider = nil,
+  model = nil,
+  chat_buffer_name = "[0x0 Chat]",
+  keymaps = {},
 }
 
 ---@type zeroxzero.Config
