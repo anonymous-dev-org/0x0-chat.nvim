@@ -240,10 +240,22 @@ local function append_change_summary(message)
   end
 
   local existing = api.nvim_buf_get_lines(state.bufnr, 0, -1, false)
+  for index = #existing, 1, -1 do
+    if existing[index] == "## Changes" then
+      set_modifiable(state.bufnr, true)
+      api.nvim_buf_set_lines(state.bufnr, index - 2, #existing, false, {})
+      break
+    end
+  end
+
+  existing = api.nvim_buf_get_lines(state.bufnr, 0, -1, false)
   if existing[#existing - 1] == "## User" and existing[#existing] == "" then
     set_modifiable(state.bufnr, true)
     api.nvim_buf_set_lines(state.bufnr, #existing - 2, #existing, false, {})
-  elseif existing[#existing] == "## User" then
+  elseif existing[#existing - 1] == "## User (queued)" and existing[#existing] == "" then
+    set_modifiable(state.bufnr, true)
+    api.nvim_buf_set_lines(state.bufnr, #existing - 2, #existing, false, {})
+  elseif existing[#existing] == "## User" or existing[#existing] == "## User (queued)" then
     set_modifiable(state.bufnr, true)
     api.nvim_buf_set_lines(state.bufnr, #existing - 1, #existing, false, {})
   end
@@ -255,9 +267,9 @@ local function append_change_summary(message)
     for _, file in ipairs(state.changes.files) do
       table.insert(lines, string.format("- %s %s", file.status or "modified", file.path or ""))
     end
+    table.insert(lines, "")
+    table.insert(lines, "Actions: :ZeroReview, :ZeroAcceptAll, :ZeroDiscardAll")
   end
-  table.insert(lines, "")
-  table.insert(lines, "Actions: :ZeroReview, :ZeroAcceptAll, :ZeroDiscardAll")
   table.insert(lines, "")
   table.insert(lines, "## User")
   table.insert(lines, "")
@@ -272,10 +284,6 @@ local function ensure_next_prompt(bufnr)
     end
   end
   append(bufnr, { "", "## User", "" })
-end
-
-local function append_queued_prompt(bufnr)
-  append(bufnr, { "", "## User (queued)", "" })
 end
 
 local function clear_empty_trailing_prompt(bufnr)
@@ -301,7 +309,6 @@ local function begin_assistant_response(bufnr, request_id)
   append(bufnr, { "", assistant_heading(), "" })
   state.active_request = request_id
   state.assistant_line = api.nvim_buf_line_count(bufnr)
-  append_queued_prompt(bufnr)
 end
 
 local function normalize_queued_prompt(bufnr)
@@ -324,7 +331,6 @@ local function mark_latest_queued_prompt_submitted(bufnr)
     if lines[index] == "## User (queued)" then
       set_modifiable(bufnr, true)
       api.nvim_buf_set_lines(bufnr, index - 1, index, false, { "## User" })
-      append_queued_prompt(bufnr)
       return
     end
   end
