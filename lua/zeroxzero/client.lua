@@ -192,7 +192,12 @@ function M._handle_message(message)
     pending[message.id] = nil
   end
 
-  if message.type == "assistant.done" or message.type == "inline.result" or message.type == "session.created" then
+  if
+    message.type == "assistant.done"
+    or message.type == "inline.result"
+    or message.type == "session.created"
+    or message.type == "user.queued"
+  then
     if callbacks.on_done then
       vim.schedule(function()
         callbacks.on_done(message)

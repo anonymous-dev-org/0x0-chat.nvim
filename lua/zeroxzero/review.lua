@@ -22,7 +22,7 @@ local function current_changes()
   return changes
 end
 
-local function refresh_changes(session)
+local function refresh_changes(session, on_refresh)
   client.request({
     type = "changes.status",
     sessionId = session.id,
@@ -33,6 +33,9 @@ local function refresh_changes(session)
         baseRef = message.baseRef,
         agentRef = message.agentRef,
       })
+      if on_refresh then
+        on_refresh()
+      end
     end,
     on_error = function(err)
       util.notify(err, vim.log.levels.ERROR)
@@ -45,7 +48,7 @@ function M.open()
   if not changes then
     local session = current_session()
     if session then
-      refresh_changes(session)
+      refresh_changes(session, M.open)
     end
     return
   end

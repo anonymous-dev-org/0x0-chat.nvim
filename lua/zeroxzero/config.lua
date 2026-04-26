@@ -5,7 +5,7 @@ local M = {}
 ---@field provider? string
 ---@field model? string
 ---@field chat_buffer_name string
----@field keymaps table<string, string|false>
+---@field keymaps table<string, string|string[]|false>
 
 ---@type zeroxzero.Config
 M.defaults = {
@@ -13,7 +13,9 @@ M.defaults = {
   provider = nil,
   model = nil,
   chat_buffer_name = "[0x0 Chat]",
-  keymaps = {},
+  keymaps = {
+    submit = { "<CR>", "<leader>as" },
+  },
 }
 
 ---@type zeroxzero.Config
