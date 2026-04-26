@@ -333,6 +333,10 @@ local function has_queued_requests()
   return next(state.queued_requests) ~= nil
 end
 
+local function notify_done()
+  util.notify("Response complete")
+end
+
 local function begin_assistant_response(bufnr, request_id)
   clear_empty_trailing_prompt(bufnr)
   append(bufnr, { "", assistant_heading(), "" })
@@ -416,6 +420,7 @@ local function send_turn(prompt)
       if message.summary and message.summary ~= "" then
         append(bufnr, { "", "_Summary: " .. message.summary .. "_" })
       end
+      notify_done()
       vim.defer_fn(function()
         if is_chat_buf(bufnr) then
           if not has_queued_requests() then
@@ -506,6 +511,7 @@ local function send_queued_turn(prompt)
       if message.summary and message.summary ~= "" then
         append(bufnr, { "", "_Summary: " .. message.summary .. "_" })
       end
+      notify_done()
       vim.defer_fn(function()
         if is_chat_buf(bufnr) and not has_queued_requests() then
           normalize_queued_prompt(bufnr)
