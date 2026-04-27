@@ -97,6 +97,15 @@ end
 local ShadowWorktree = {}
 ShadowWorktree.__index = ShadowWorktree
 
+function ShadowWorktree:is_valid()
+  local stat = vim.loop.fs_stat(self.path)
+  if not stat or stat.type ~= "directory" then
+    return false
+  end
+  local _, code = systemlist({ "git", "-C", self.path, "rev-parse", "--show-toplevel" })
+  return code == 0
+end
+
 function ShadowWorktree:diff(paths)
   local args = { "git", "-C", self.path, "diff", "--no-ext-diff", "--unified=0" }
   if paths and #paths > 0 then
@@ -266,6 +275,9 @@ function ShadowWorktree:mark_accepted(files)
 end
 
 function ShadowWorktree:discard()
+  if not self:is_valid() then
+    return
+  end
   local _, code = systemlist({ "git", "-C", self.root, "worktree", "remove", "--force", self.path })
   if code ~= 0 then
     vim.fn.delete(self.path, "rf")

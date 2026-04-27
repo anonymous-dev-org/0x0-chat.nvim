@@ -4,6 +4,8 @@ local state = {
   bufnr = nil,
   winid = nil,
   worktree = nil,
+  on_accept_all = nil,
+  on_discard_all = nil,
 }
 
 local function ensure_buffer()
@@ -111,6 +113,12 @@ local function refresh(opts)
     vim.notify("0x0: no chat review worktree", vim.log.levels.INFO)
     return false
   end
+  if not state.worktree:is_valid() then
+    state.worktree = nil
+    render({ "Chat review worktree is no longer available." })
+    vim.notify("0x0: chat review worktree is no longer available", vim.log.levels.WARN)
+    return false
+  end
 
   local lines = state.worktree:diff()
   if #lines == 0 then
@@ -152,7 +160,10 @@ local function setup_keymaps(bufnr)
 end
 
 function M.show_worktree(worktree, opts)
+  opts = opts or {}
   state.worktree = worktree or state.worktree
+  state.on_accept_all = opts.on_accept_all or state.on_accept_all
+  state.on_discard_all = opts.on_discard_all or state.on_discard_all
   if not state.worktree then
     vim.notify("0x0: no chat review worktree", vim.log.levels.INFO)
     return false
@@ -215,6 +226,9 @@ function M.accept_all()
     vim.notify("0x0: no chat review worktree", vim.log.levels.INFO)
     return
   end
+  if state.on_accept_all then
+    return state.on_accept_all()
+  end
   local ok, err = state.worktree:accept_all()
   if not ok then
     vim.notify("0x0: " .. err, vim.log.levels.ERROR)
@@ -222,6 +236,8 @@ function M.accept_all()
   end
   state.worktree:discard()
   state.worktree = nil
+  state.on_accept_all = nil
+  state.on_discard_all = nil
   vim.cmd.checktime()
   render({ "Accepted all chat changes." })
   return true
@@ -232,10 +248,27 @@ function M.discard_all()
     vim.notify("0x0: no chat review worktree", vim.log.levels.INFO)
     return
   end
+  if state.on_discard_all then
+    return state.on_discard_all()
+  end
   state.worktree:discard()
   state.worktree = nil
+  state.on_accept_all = nil
+  state.on_discard_all = nil
   render({ "Discarded all chat changes." })
   return true
+end
+
+function M.clear_worktree(worktree)
+  if not worktree or state.worktree == worktree then
+    state.worktree = nil
+    state.on_accept_all = nil
+    state.on_discard_all = nil
+  end
+end
+
+function M.render_message(message)
+  render({ message })
 end
 
 return M

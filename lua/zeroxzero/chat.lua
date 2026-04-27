@@ -352,8 +352,12 @@ end
 
 function Chat:_ensure_worktree(on_ready)
   if self.worktree then
-    on_ready(self.worktree, nil)
-    return
+    if self.worktree:is_valid() then
+      on_ready(self.worktree, nil)
+      return
+    end
+    DiffPreview.clear_worktree(self.worktree)
+    self.worktree = nil
   end
   local worktree, err = ShadowWorktree.create(vim.fn.getcwd())
   if not worktree then
@@ -513,7 +517,7 @@ function Chat:_submit_prompt(prompt, user_id, retried_session)
           self.response_started = false
           self.cancel_requested = false
           if self.worktree and self:_queued_count() == 0 then
-            DiffPreview.show_worktree(self.worktree, { focus = false })
+            self:_show_worktree(false)
           end
           self:_notify_or_continue()
         end)
@@ -539,7 +543,18 @@ function Chat:cancel()
   end
 end
 
-function Chat:_reset_session()
+function Chat:_clear_worktree(discard)
+  local worktree = self.worktree
+  self.worktree = nil
+  DiffPreview.clear_worktree(worktree)
+  if discard and worktree then
+    worktree:discard()
+  end
+end
+
+---@param opts? { discard_worktree?: boolean }
+function Chat:_reset_session(opts)
+  opts = opts or {}
   self.widget:unbind_permission_keys()
   if self.client and self.session_id then
     self.client:cancel(self.session_id)
@@ -556,24 +571,57 @@ function Chat:_reset_session()
   self.queued_prompts = {}
   self:_set_activity(nil)
   self.config_options = {}
+  if opts.discard_worktree ~= false then
+    self:_clear_worktree(true)
+  end
+end
+
+function Chat:_show_worktree(focus)
+  if self.worktree and not self.worktree:is_valid() then
+    DiffPreview.clear_worktree(self.worktree)
+    self.worktree = nil
+  end
+  DiffPreview.show_worktree(self.worktree, {
+    focus = focus,
+    on_accept_all = function()
+      return self:accept_all()
+    end,
+    on_discard_all = function()
+      return self:discard_all()
+    end,
+  })
 end
 
 function Chat:show_diff()
-  DiffPreview.show_worktree(self.worktree, { focus = true })
+  self:_show_worktree(true)
 end
 
 function Chat:accept_all()
-  if DiffPreview.accept_all() then
-    self.worktree = nil
-    self:_reset_session()
+  if not self.worktree then
+    vim.notify("0x0: no chat review worktree", vim.log.levels.INFO)
+    return
   end
+  local ok, err = self.worktree:accept_all()
+  if not ok then
+    vim.notify("0x0: " .. err, vim.log.levels.ERROR)
+    return
+  end
+  self:_clear_worktree(true)
+  self:_reset_session({ discard_worktree = false })
+  vim.cmd.checktime()
+  DiffPreview.render_message("Accepted all chat changes.")
+  return true
 end
 
 function Chat:discard_all()
-  if DiffPreview.discard_all() then
-    self.worktree = nil
-    self:_reset_session()
+  if not self.worktree then
+    vim.notify("0x0: no chat review worktree", vim.log.levels.INFO)
+    return
   end
+  self:_clear_worktree(true)
+  self:_reset_session({ discard_worktree = false })
+  DiffPreview.render_message("Discarded all chat changes.")
+  return true
 end
 
 function Chat:stop()
@@ -612,10 +660,34 @@ function Chat:set_mode(mode)
 end
 
 function Chat:discover_options(callback)
-  self:_ensure_session(function()
-    if callback then
-      callback(self:current_settings())
+  self:_ensure_client(function(client, cerr)
+    if cerr or not client then
+      local msg = cerr and (cerr.message or vim.inspect(cerr)) or "client unavailable"
+      vim.notify("acp: option discovery failed: " .. msg, vim.log.levels.ERROR)
+      if callback then
+        callback(self:current_settings())
+      end
+      return
     end
+    client:new_session(vim.fn.getcwd(), function(result, err)
+      if self.client ~= client then
+        return
+      end
+      if err or not result or not result.sessionId then
+        vim.notify("acp: option discovery failed: " .. vim.inspect(err), vim.log.levels.ERROR)
+        if callback then
+          callback(self:current_settings())
+        end
+        return
+      end
+      local session_id = result.sessionId
+      self:_set_config_options(result.configOptions)
+      client:cancel(session_id)
+      client:unsubscribe(session_id)
+      if callback then
+        callback(self:current_settings())
+      end
+    end)
   end)
 end
 
