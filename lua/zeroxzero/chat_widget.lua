@@ -316,7 +316,7 @@ function ChatWidget:_render_activity()
 
   local spinner = ACTIVITY_SPINNER[self.activity_frame] or ACTIVITY_SPINNER[1]
   local label = self.activity_label or ACTIVITY_LABELS[self.activity_state] or "Working"
-  vim.wo[self.input_win].winbar = ("%#ZeroChatStatusInProgress#%s %s"):format(spinner, label)
+  vim.wo[self.input_win].winbar = ("%%#ZeroChatStatusInProgress#%s %s"):format(spinner, label)
 end
 
 ---@param state string|nil
