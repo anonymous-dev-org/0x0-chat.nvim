@@ -440,6 +440,13 @@ local AGENT_HEADERS = {
   thought = "## Thinking",
 }
 
+local function user_header(msg)
+  if msg.status == "queued" then
+    return "## Next message"
+  end
+  return "## User"
+end
+
 ---@param msg table
 ---@return string|nil hl_group
 local function line_hl_for(msg)
