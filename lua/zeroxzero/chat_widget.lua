@@ -19,7 +19,7 @@ local STATUS_HL = {
   failed = "ZeroChatStatusFailed",
 }
 
-local PERMISSION_PENDING_HL = "ZeroChatStatusPending"
+local PERMISSION_PENDING_HL = "ZeroChatPermissionPending"
 local PERMISSION_DECIDED_HL = "Comment"
 
 local ACTIVITY_SPINNER = { "⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏" }
@@ -28,13 +28,11 @@ local ACTIVITY_LABELS = {
   responding = "Model responding",
 }
 
-local PERMISSION_HINT = "[a] allow once  [A] allow always  [r] reject once  [R] reject always"
-local PERMISSION_HINT_INLINE = "  — " .. PERMISSION_HINT
-local KEY_TO_KIND = {
-  a = "allow_once",
-  A = "allow_always",
-  r = "reject_once",
-  R = "reject_always",
+local KEY_FOR_PERMISSION_KIND = {
+  allow_once = "a",
+  allow_always = "A",
+  reject_once = "r",
+  reject_always = "R",
 }
 
 ---@class zeroxzero.ChatWidget
@@ -51,6 +49,7 @@ local KEY_TO_KIND = {
 ---@field user_extmarks table<string, integer>
 ---@field permission_pending string|nil
 ---@field permission_keymap_set boolean
+---@field permission_keys string[]
 ---@field last_kind string|nil
 ---@field activity_state string|nil
 ---@field activity_label string|nil
@@ -80,6 +79,7 @@ function ChatWidget.new(tab_page_id, history, on_submit, on_cancel)
     user_extmarks = {},
     permission_pending = nil,
     permission_keymap_set = false,
+    permission_keys = {},
     last_kind = nil,
     activity_state = nil,
     activity_label = nil,
@@ -102,6 +102,7 @@ local function setup_highlights()
   api.nvim_set_hl(0, "ZeroChatStatusInProgress", { link = "DiagnosticVirtualTextInfo", default = true })
   api.nvim_set_hl(0, "ZeroChatStatusCompleted", { link = "DiagnosticVirtualTextOk", default = true })
   api.nvim_set_hl(0, "ZeroChatStatusFailed", { link = "DiagnosticVirtualTextError", default = true })
+  api.nvim_set_hl(0, "ZeroChatPermissionPending", { fg = "#d7af5f", default = true })
 end
 
 local function tab_win_for_buf(tab_page_id, bufnr)
@@ -350,12 +351,62 @@ local function format_tool_line(tool)
   return ("%s %s — %s"):format(icon, tool.kind or "tool", title)
 end
 
+local function permission_option_label(option)
+  if option.name and option.name ~= "" then
+    return option.name
+  end
+  if option.kind and option.kind ~= "" then
+    return option.kind:gsub("_", " ")
+  end
+  return "option"
+end
+
+local function permission_option_entries(options)
+  local entries = {}
+  local used_keys = {}
+  local next_numeric_key = 1
+
+  for _, option in ipairs(options or {}) do
+    local key = option.kind and KEY_FOR_PERMISSION_KIND[option.kind] or nil
+    if not key or used_keys[key] then
+      while used_keys[tostring(next_numeric_key)] do
+        next_numeric_key = next_numeric_key + 1
+      end
+      key = tostring(next_numeric_key)
+      next_numeric_key = next_numeric_key + 1
+    end
+
+    used_keys[key] = true
+    entries[#entries + 1] = {
+      key = key,
+      option_id = option.optionId,
+      name = permission_option_label(option),
+      kind = option.kind,
+    }
+  end
+
+  return entries
+end
+
+local function format_permission_hint(options)
+  local entries = permission_option_entries(options)
+  if #entries == 0 then
+    return "[Esc] cancel (no permission options provided)"
+  end
+
+  local chunks = {}
+  for _, entry in ipairs(entries) do
+    chunks[#chunks + 1] = ("[%s] %s"):format(entry.key, entry.name)
+  end
+  return table.concat(chunks, "  ")
+end
+
 local function format_permission_line(perm)
   local base = ("> tool request: `%s` %s"):format(perm.kind or "tool", perm.description or "")
   if perm.decision then
     return base .. " — " .. perm.decision
   end
-  return base .. PERMISSION_HINT_INLINE
+  return base .. "  — " .. format_permission_hint(perm.options)
 end
 
 ---@param bufnr integer
@@ -524,27 +575,28 @@ function ChatWidget:bind_permission_keys(tool_call_id, options, on_decision)
   self:unbind_permission_keys()
   self.permission_pending = tool_call_id
 
-  local function find_option(kind)
-    for _, option in ipairs(options or {}) do
-      if option.kind == kind then
-        return option.optionId, option.name
-      end
+  local opts = { buffer = self.transcript_buf, nowait = true, silent = true, desc = "0x0 chat permission" }
+  for _, entry in ipairs(permission_option_entries(options)) do
+    if not entry.option_id or entry.option_id == "" then
+      vim.notify(("acp: permission option '%s' is missing optionId"):format(entry.name), vim.log.levels.WARN)
+    else
+      local key = entry.key
+      local option_id = entry.option_id
+      local option_name = entry.name
+      self.permission_keys[#self.permission_keys + 1] = key
+      vim.keymap.set("n", key, function()
+        self:unbind_permission_keys()
+        on_decision(option_id, option_name)
+      end, opts)
     end
   end
 
-  local opts = { buffer = self.transcript_buf, nowait = true, silent = true, desc = "0x0 chat permission" }
-  for key, kind in pairs(KEY_TO_KIND) do
-    vim.keymap.set("n", key, function()
-      local option_id, option_name = find_option(kind)
-      if not option_id then
-        local fallback_id, fallback_name = find_option("reject_once")
-        option_id = fallback_id
-        option_name = fallback_name or kind
-        vim.notify(("acp: agent did not offer '%s'"):format(kind), vim.log.levels.WARN)
-      end
+  if #self.permission_keys == 0 then
+    vim.keymap.set("n", "<Esc>", function()
       self:unbind_permission_keys()
-      on_decision(option_id, option_name)
+      on_decision(nil)
     end, opts)
+    self.permission_keys[#self.permission_keys + 1] = "<Esc>"
   end
   self.permission_keymap_set = true
 end
@@ -554,10 +606,11 @@ function ChatWidget:unbind_permission_keys()
     return
   end
   if buf_valid(self.transcript_buf) then
-    for key in pairs(KEY_TO_KIND) do
+    for _, key in ipairs(self.permission_keys) do
       pcall(vim.keymap.del, "n", key, { buffer = self.transcript_buf })
     end
   end
+  self.permission_keys = {}
   self.permission_keymap_set = false
   self.permission_pending = nil
 end

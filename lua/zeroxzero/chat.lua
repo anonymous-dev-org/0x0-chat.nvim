@@ -198,7 +198,14 @@ end
 function Chat:_handle_permission(request, respond)
   vim.schedule(function()
     if self.widget.permission_pending then
-      respond("reject_once")
+      local reject_once
+      for _, option in ipairs(request.options or {}) do
+        if option.kind == "reject_once" then
+          reject_once = option.optionId
+          break
+        end
+      end
+      respond(reject_once)
       return
     end
     if self.in_flight then
