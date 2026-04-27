@@ -53,7 +53,6 @@ local KEY_FOR_PERMISSION_KIND = {
 ---@field last_kind string|nil
 ---@field activity_state string|nil
 ---@field activity_label string|nil
----@field activity_extmark integer|nil
 ---@field activity_frame integer
 ---@field activity_timer uv_timer_t|nil
 local ChatWidget = {}
@@ -83,7 +82,6 @@ function ChatWidget.new(tab_page_id, history, on_submit, on_cancel)
     last_kind = nil,
     activity_state = nil,
     activity_label = nil,
-    activity_extmark = nil,
     activity_frame = 1,
     activity_timer = nil,
   }, ChatWidget)
@@ -133,7 +131,6 @@ function ChatWidget:_ensure_transcript_buf()
   self.tool_extmarks = {}
   self.user_extmarks = {}
   self.last_kind = nil
-  self.activity_extmark = nil
   return bufnr
 end
 
@@ -199,6 +196,8 @@ function ChatWidget:open()
     vim.wo[self.input_win].linebreak = true
     vim.wo[self.input_win].winfixheight = true
   end
+
+  self:_render_activity()
 
   if win_valid(self.input_win) then
     api.nvim_set_current_win(self.input_win)
@@ -306,26 +305,18 @@ function ChatWidget:_ensure_activity_timer()
 end
 
 function ChatWidget:_render_activity()
-  local bufnr = self.transcript_buf
-  if not buf_valid(bufnr) then
+  if not win_valid(self.input_win) then
     return
   end
 
-  if self.activity_extmark then
-    pcall(api.nvim_buf_del_extmark, bufnr, NS, self.activity_extmark)
-    self.activity_extmark = nil
-  end
   if not self.activity_state then
+    vim.wo[self.input_win].winbar = " "
     return
   end
 
   local spinner = ACTIVITY_SPINNER[self.activity_frame] or ACTIVITY_SPINNER[1]
   local label = self.activity_label or ACTIVITY_LABELS[self.activity_state] or "Working"
-  local last_line = math.max(api.nvim_buf_line_count(bufnr) - 1, 0)
-  self.activity_extmark = api.nvim_buf_set_extmark(bufnr, NS, last_line, 0, {
-    virt_lines = { { { spinner .. " " .. label, "Comment" } } },
-    virt_lines_above = false,
-  })
+  vim.wo[self.input_win].winbar = ("%#ZeroChatStatusInProgress#%s %s"):format(spinner, label)
 end
 
 ---@param state string|nil
