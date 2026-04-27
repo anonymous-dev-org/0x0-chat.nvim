@@ -35,7 +35,7 @@ end
 ---@field widget zeroxzero.ChatWidget
 ---@field in_flight boolean
 ---@field response_started boolean
----@field input_queued boolean
+---@field queued_prompts table[]
 ---@field cancel_requested boolean
 ---@field worktree table|nil
 local Chat = {}
@@ -55,7 +55,7 @@ function Chat.new(tab_page_id)
     history = History.new(),
     in_flight = false,
     response_started = false,
-    input_queued = false,
+    queued_prompts = {},
     cancel_requested = false,
     worktree = nil,
   }, Chat)
@@ -88,9 +88,26 @@ function Chat:_render()
   end)
 end
 
+function Chat:_add_review_activity()
+  if not self.worktree or not self.worktree:is_valid() then
+    return
+  end
+  local files = self.worktree:changed_files()
+  if #files == 0 then
+    return
+  end
+  local text = ("Pending review: %d changed file%s"):format(#files, #files == 1 and "" or "s")
+  local last = self.history.messages[#self.history.messages]
+  if last and last.type == "activity" and last.text == text then
+    return
+  end
+  self.history:add_activity(text, "pending")
+  self:_render()
+end
+
 ---@return integer
 function Chat:_queued_count()
-  return self.input_queued and 1 or 0
+  return #self.queued_prompts
 end
 
 ---@param state string|nil
@@ -198,14 +215,7 @@ end
 function Chat:_handle_permission(request, respond)
   vim.schedule(function()
     if self.widget.permission_pending then
-      local reject_once
-      for _, option in ipairs(request.options or {}) do
-        if option.kind == "reject_once" then
-          reject_once = option.optionId
-          break
-        end
-      end
-      respond(reject_once)
+      respond("reject_once")
       return
     end
     if self.in_flight then
@@ -449,7 +459,9 @@ function Chat:submit()
     return
   end
   if self.in_flight then
-    self.input_queued = true
+    local id = self.history:add_user(prompt, "queued")
+    table.insert(self.queued_prompts, { id = id, text = prompt })
+    self.widget:clear_input()
     self:_set_turn_activity(self.widget.activity_state or "waiting", self.widget.activity_label or "Working")
     self.widget:render()
     return
@@ -522,6 +534,7 @@ function Chat:_submit_prompt(prompt, user_id, retried_session)
           self.response_started = false
           self.cancel_requested = false
           if self.worktree and self:_queued_count() == 0 then
+            self:_add_review_activity()
             self:_show_worktree(false)
           end
           self:_notify_or_continue()
@@ -532,21 +545,15 @@ function Chat:_submit_prompt(prompt, user_id, retried_session)
 end
 
 function Chat:_notify_or_continue()
-  if self.input_queued then
-    self.input_queued = false
-    local prompt = self.widget:read_input()
-    if prompt ~= "" then
-      local id = self.history:add_user(prompt, "active")
-      self:_submit_prompt(prompt, id)
-      return
-    end
-    self.widget:render()
+  local next_prompt = table.remove(self.queued_prompts, 1)
+  if next_prompt then
+    self:_submit_prompt(next_prompt.text, next_prompt.id)
+    return
   end
   notify_user("ZeroChatTurnEnd")
 end
 
 function Chat:cancel()
-  self.input_queued = false
   if self.client and self.session_id and self.in_flight then
     self.cancel_requested = true
     self:_set_turn_activity("waiting", "Cancelling")
@@ -579,7 +586,7 @@ function Chat:_reset_session(opts)
   self.in_flight = false
   self.response_started = false
   self.cancel_requested = false
-  self.input_queued = false
+  self.queued_prompts = {}
   self:_set_activity(nil)
   self.config_options = {}
   if opts.discard_worktree ~= false then

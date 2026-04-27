@@ -170,6 +170,30 @@ function ShadowWorktree:changed_files()
   return files
 end
 
+function ShadowWorktree:root_path(file)
+  return self.root .. "/" .. file
+end
+
+function ShadowWorktree:proposal_path(file)
+  return self.path .. "/" .. file
+end
+
+function ShadowWorktree:read_root_file(file)
+  local path = self:root_path(file)
+  if not vim.loop.fs_stat(path) then
+    return {}
+  end
+  return vim.fn.readfile(path, "b")
+end
+
+function ShadowWorktree:read_proposal_file(file)
+  local path = self:proposal_path(file)
+  if not vim.loop.fs_stat(path) then
+    return {}
+  end
+  return vim.fn.readfile(path, "b")
+end
+
 function ShadowWorktree:accept_all()
   local patch = self:patch()
   if patch == "" then
@@ -201,6 +225,17 @@ function ShadowWorktree:accept_patch(patch)
   local _, code = system({ "git", "-C", self.root, "apply", "--unidiff-zero", "--whitespace=nowarn", "-" }, patch)
   if code ~= 0 then
     return false, "failed to apply chat hunk"
+  end
+  return true, nil
+end
+
+function ShadowWorktree:reject_patch(patch)
+  if not patch or patch == "" then
+    return false, "no hunk to reject"
+  end
+  local _, code = system({ "git", "-C", self.path, "apply", "-R", "--unidiff-zero", "--whitespace=nowarn", "-" }, patch)
+  if code ~= 0 then
+    return false, "failed to reject chat hunk"
   end
   return true, nil
 end

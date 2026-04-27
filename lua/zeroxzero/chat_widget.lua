@@ -19,7 +19,7 @@ local STATUS_HL = {
   failed = "ZeroChatStatusFailed",
 }
 
-local PERMISSION_PENDING_HL = "ZeroChatPermissionPending"
+local PERMISSION_PENDING_HL = "ZeroChatStatusPending"
 local PERMISSION_DECIDED_HL = "Comment"
 
 local ACTIVITY_SPINNER = { "⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏" }
@@ -28,11 +28,13 @@ local ACTIVITY_LABELS = {
   responding = "Model responding",
 }
 
-local KEY_FOR_PERMISSION_KIND = {
-  allow_once = "a",
-  allow_always = "A",
-  reject_once = "r",
-  reject_always = "R",
+local PERMISSION_HINT = "[a] allow once  [A] allow always  [r] reject once  [R] reject always"
+local PERMISSION_HINT_INLINE = "  — " .. PERMISSION_HINT
+local KEY_TO_KIND = {
+  a = "allow_once",
+  A = "allow_always",
+  r = "reject_once",
+  R = "reject_always",
 }
 
 ---@class zeroxzero.ChatWidget
@@ -49,10 +51,10 @@ local KEY_FOR_PERMISSION_KIND = {
 ---@field user_extmarks table<string, integer>
 ---@field permission_pending string|nil
 ---@field permission_keymap_set boolean
----@field permission_keys string[]
 ---@field last_kind string|nil
 ---@field activity_state string|nil
 ---@field activity_label string|nil
+---@field activity_extmark integer|nil
 ---@field activity_frame integer
 ---@field activity_timer uv_timer_t|nil
 local ChatWidget = {}
@@ -78,10 +80,10 @@ function ChatWidget.new(tab_page_id, history, on_submit, on_cancel)
     user_extmarks = {},
     permission_pending = nil,
     permission_keymap_set = false,
-    permission_keys = {},
     last_kind = nil,
     activity_state = nil,
     activity_label = nil,
+    activity_extmark = nil,
     activity_frame = 1,
     activity_timer = nil,
   }, ChatWidget)
@@ -100,7 +102,6 @@ local function setup_highlights()
   api.nvim_set_hl(0, "ZeroChatStatusInProgress", { link = "DiagnosticVirtualTextInfo", default = true })
   api.nvim_set_hl(0, "ZeroChatStatusCompleted", { link = "DiagnosticVirtualTextOk", default = true })
   api.nvim_set_hl(0, "ZeroChatStatusFailed", { link = "DiagnosticVirtualTextError", default = true })
-  api.nvim_set_hl(0, "ZeroChatPermissionPending", { fg = "#d7af5f", default = true })
 end
 
 local function tab_win_for_buf(tab_page_id, bufnr)
@@ -131,6 +132,7 @@ function ChatWidget:_ensure_transcript_buf()
   self.tool_extmarks = {}
   self.user_extmarks = {}
   self.last_kind = nil
+  self.activity_extmark = nil
   return bufnr
 end
 
@@ -196,8 +198,6 @@ function ChatWidget:open()
     vim.wo[self.input_win].linebreak = true
     vim.wo[self.input_win].winfixheight = true
   end
-
-  self:_render_activity()
 
   if win_valid(self.input_win) then
     api.nvim_set_current_win(self.input_win)
@@ -305,18 +305,26 @@ function ChatWidget:_ensure_activity_timer()
 end
 
 function ChatWidget:_render_activity()
-  if not win_valid(self.input_win) then
+  local bufnr = self.transcript_buf
+  if not buf_valid(bufnr) then
     return
   end
 
+  if self.activity_extmark then
+    pcall(api.nvim_buf_del_extmark, bufnr, NS, self.activity_extmark)
+    self.activity_extmark = nil
+  end
   if not self.activity_state then
-    vim.wo[self.input_win].winbar = " "
     return
   end
 
   local spinner = ACTIVITY_SPINNER[self.activity_frame] or ACTIVITY_SPINNER[1]
   local label = self.activity_label or ACTIVITY_LABELS[self.activity_state] or "Working"
-  vim.wo[self.input_win].winbar = ("%%#ZeroChatStatusInProgress#%s %s"):format(spinner, label)
+  local last_line = math.max(api.nvim_buf_line_count(bufnr) - 1, 0)
+  self.activity_extmark = api.nvim_buf_set_extmark(bufnr, NS, last_line, 0, {
+    virt_lines = { { { spinner .. " " .. label, "Comment" } } },
+    virt_lines_above = false,
+  })
 end
 
 ---@param state string|nil
@@ -342,62 +350,17 @@ local function format_tool_line(tool)
   return ("%s %s — %s"):format(icon, tool.kind or "tool", title)
 end
 
-local function permission_option_label(option)
-  if option.name and option.name ~= "" then
-    return option.name
-  end
-  if option.kind and option.kind ~= "" then
-    return option.kind:gsub("_", " ")
-  end
-  return "option"
-end
-
-local function permission_option_entries(options)
-  local entries = {}
-  local used_keys = {}
-  local next_numeric_key = 1
-
-  for _, option in ipairs(options or {}) do
-    local key = option.kind and KEY_FOR_PERMISSION_KIND[option.kind] or nil
-    if not key or used_keys[key] then
-      while used_keys[tostring(next_numeric_key)] do
-        next_numeric_key = next_numeric_key + 1
-      end
-      key = tostring(next_numeric_key)
-      next_numeric_key = next_numeric_key + 1
-    end
-
-    used_keys[key] = true
-    entries[#entries + 1] = {
-      key = key,
-      option_id = option.optionId,
-      name = permission_option_label(option),
-      kind = option.kind,
-    }
-  end
-
-  return entries
-end
-
-local function format_permission_hint(options)
-  local entries = permission_option_entries(options)
-  if #entries == 0 then
-    return "[Esc] cancel (no permission options provided)"
-  end
-
-  local chunks = {}
-  for _, entry in ipairs(entries) do
-    chunks[#chunks + 1] = ("[%s] %s"):format(entry.key, entry.name)
-  end
-  return table.concat(chunks, "  ")
-end
-
 local function format_permission_line(perm)
   local base = ("> tool request: `%s` %s"):format(perm.kind or "tool", perm.description or "")
   if perm.decision then
     return base .. " — " .. perm.decision
   end
-  return base .. "  — " .. format_permission_hint(perm.options)
+  return base .. PERMISSION_HINT_INLINE
+end
+
+local function format_activity_line(activity)
+  local icon = STATUS_ICONS[activity.status] or STATUS_ICONS.completed
+  return ("%s %s"):format(icon, activity.text or "")
 end
 
 ---@param bufnr integer
@@ -451,6 +414,8 @@ end
 ---@return string|nil hl_group
 local function line_hl_for(msg)
   if msg.type == "tool_call" then
+    return STATUS_HL[msg.status]
+  elseif msg.type == "activity" then
     return STATUS_HL[msg.status]
   elseif msg.type == "permission" then
     if msg.decision then
@@ -523,7 +488,7 @@ function ChatWidget:render()
         lines = {}
       end
       local header_index = #lines + 1
-      lines[#lines + 1] = "## User"
+      lines[#lines + 1] = user_header(msg)
       lines[#lines + 1] = ""
       for _, line in ipairs(vim.split(msg.text or "", "\n", { plain = true })) do
         lines[#lines + 1] = line
@@ -547,6 +512,11 @@ function ChatWidget:render()
       local start_line = append_lines(bufnr, { "", format_permission_line(msg) })
       self.tool_extmarks[msg.tool_call_id] = place_status_extmark(bufnr, start_line + 1, msg)
       self.last_kind = "permission"
+    elseif msg.type == "activity" then
+      local lines = self.last_kind == "activity" and { format_activity_line(msg) } or { "", format_activity_line(msg) }
+      local start_line = append_lines(bufnr, lines)
+      place_status_extmark(bufnr, start_line + #lines - 1, msg)
+      self.last_kind = "activity"
     end
   end
 
@@ -566,28 +536,27 @@ function ChatWidget:bind_permission_keys(tool_call_id, options, on_decision)
   self:unbind_permission_keys()
   self.permission_pending = tool_call_id
 
-  local opts = { buffer = self.transcript_buf, nowait = true, silent = true, desc = "0x0 chat permission" }
-  for _, entry in ipairs(permission_option_entries(options)) do
-    if not entry.option_id or entry.option_id == "" then
-      vim.notify(("acp: permission option '%s' is missing optionId"):format(entry.name), vim.log.levels.WARN)
-    else
-      local key = entry.key
-      local option_id = entry.option_id
-      local option_name = entry.name
-      self.permission_keys[#self.permission_keys + 1] = key
-      vim.keymap.set("n", key, function()
-        self:unbind_permission_keys()
-        on_decision(option_id, option_name)
-      end, opts)
+  local function find_option(kind)
+    for _, option in ipairs(options or {}) do
+      if option.kind == kind then
+        return option.optionId, option.name
+      end
     end
   end
 
-  if #self.permission_keys == 0 then
-    vim.keymap.set("n", "<Esc>", function()
+  local opts = { buffer = self.transcript_buf, nowait = true, silent = true, desc = "0x0 chat permission" }
+  for key, kind in pairs(KEY_TO_KIND) do
+    vim.keymap.set("n", key, function()
+      local option_id, option_name = find_option(kind)
+      if not option_id then
+        local fallback_id, fallback_name = find_option("reject_once")
+        option_id = fallback_id
+        option_name = fallback_name or kind
+        vim.notify(("acp: agent did not offer '%s'"):format(kind), vim.log.levels.WARN)
+      end
       self:unbind_permission_keys()
-      on_decision(nil)
+      on_decision(option_id, option_name)
     end, opts)
-    self.permission_keys[#self.permission_keys + 1] = "<Esc>"
   end
   self.permission_keymap_set = true
 end
@@ -597,11 +566,10 @@ function ChatWidget:unbind_permission_keys()
     return
   end
   if buf_valid(self.transcript_buf) then
-    for _, key in ipairs(self.permission_keys) do
+    for key in pairs(KEY_TO_KIND) do
       pcall(vim.keymap.del, "n", key, { buffer = self.transcript_buf })
     end
   end
-  self.permission_keys = {}
   self.permission_keymap_set = false
   self.permission_pending = nil
 end
