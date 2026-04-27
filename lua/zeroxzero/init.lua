@@ -22,6 +22,18 @@ function M.setup(opts)
     require("zeroxzero.chat").cancel()
   end, { desc = "Cancel the in-flight prompt" })
 
+  vim.api.nvim_create_user_command("ZeroChatDiff", function()
+    require("zeroxzero.chat").diff()
+  end, { desc = "Show the full diff for the latest 0x0 chat turn" })
+
+  vim.api.nvim_create_user_command("ZeroChatAcceptAll", function()
+    require("zeroxzero.chat").accept_all()
+  end, { desc = "Accept all changes from the 0x0 chat worktree" })
+
+  vim.api.nvim_create_user_command("ZeroChatDiscardAll", function()
+    require("zeroxzero.chat").discard_all()
+  end, { desc = "Discard all changes from the 0x0 chat worktree" })
+
   vim.api.nvim_create_user_command("ZeroChatStop", function()
     require("zeroxzero.chat").stop()
     vim.notify("acp: stopped", vim.log.levels.INFO)

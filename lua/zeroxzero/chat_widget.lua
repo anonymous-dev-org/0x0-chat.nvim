@@ -1,4 +1,5 @@
 local config = require("zeroxzero.config")
+local file_completion = require("zeroxzero.file_completion")
 
 local api = vim.api
 
@@ -153,6 +154,13 @@ function ChatWidget:_ensure_input_buf()
   vim.keymap.set("n", "<localleader>c", function()
     self.on_cancel()
   end, vim.tbl_extend("force", opts, { desc = "0x0 chat cancel" }))
+  vim.keymap.set("n", "<localleader>d", function()
+    require("zeroxzero.chat").diff()
+  end, vim.tbl_extend("force", opts, { desc = "0x0 chat turn diff" }))
+  vim.keymap.set("i", "@", function()
+    vim.schedule(file_completion.trigger)
+    return "@"
+  end, vim.tbl_extend("force", opts, { desc = "0x0 chat file mention", expr = true }))
 
   self.input_buf = bufnr
   return bufnr

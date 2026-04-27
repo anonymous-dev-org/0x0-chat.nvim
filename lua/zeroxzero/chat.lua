@@ -1,7 +1,10 @@
 local config = require("zeroxzero.config")
 local acp_client = require("zeroxzero.acp_client")
+local DiffPreview = require("zeroxzero.diff_preview")
 local History = require("zeroxzero.history")
 local ChatWidget = require("zeroxzero.chat_widget")
+local ReferenceMentions = require("zeroxzero.reference_mentions")
+local ShadowWorktree = require("zeroxzero.shadow_worktree")
 
 local api = vim.api
 
@@ -33,6 +36,8 @@ end
 ---@field in_flight boolean
 ---@field response_started boolean
 ---@field queued_prompts table[]
+---@field cancel_requested boolean
+---@field worktree table|nil
 local Chat = {}
 Chat.__index = Chat
 
@@ -51,6 +56,8 @@ function Chat.new(tab_page_id)
     in_flight = false,
     response_started = false,
     queued_prompts = {},
+    cancel_requested = false,
+    worktree = nil,
   }, Chat)
   self.widget = ChatWidget.new(tab_page_id, self.history, function()
     self:submit()
@@ -108,6 +115,41 @@ local function describe_tool(tool_call)
   return kind, title
 end
 
+local function tool_patch(update)
+  local patch = {}
+  if update.status then
+    patch.status = update.status
+  end
+  if update.title and update.title ~= "" then
+    patch.title = update.title
+  end
+  if update.kind then
+    patch.kind = update.kind
+  end
+
+  return patch
+end
+
+local function error_message(err)
+  if type(err) == "table" then
+    return err.message or vim.inspect(err)
+  end
+  return tostring(err)
+end
+
+local function is_transport_disconnected(err)
+  local message = error_message(err)
+  return message == "transport disconnected" or message == "transport error"
+end
+
+local function is_session_missing(err)
+  return error_message(err) == "Resource not found"
+end
+
+local function is_cancel_result(result)
+  return result and result.stopReason == "cancelled"
+end
+
 function Chat:_handle_update(update)
   local kind = update.sessionUpdate
   if kind == "agent_message_chunk" or kind == "agent_thought_chunk" then
@@ -145,16 +187,7 @@ function Chat:_handle_update(update)
         self:_set_turn_activity("waiting", "Running tool")
       end
     end
-    local patch = {}
-    if update.status then
-      patch.status = update.status
-    end
-    if update.title and update.title ~= "" then
-      patch.title = update.title
-    end
-    if update.kind then
-      patch.kind = update.kind
-    end
+    local patch = tool_patch(update)
     self.history:update_tool_call(update.toolCallId, patch)
     self:_render()
   elseif kind == "config_option_update" then
@@ -317,39 +350,59 @@ function Chat:_ensure_client(on_ready)
   end)
 end
 
+function Chat:_ensure_worktree(on_ready)
+  if self.worktree then
+    on_ready(self.worktree, nil)
+    return
+  end
+  local worktree, err = ShadowWorktree.create(vim.fn.getcwd())
+  if not worktree then
+    on_ready(nil, { message = err or "failed to create chat worktree" })
+    return
+  end
+  self.worktree = worktree
+  on_ready(worktree, nil)
+end
+
 function Chat:_ensure_session(on_session)
-  self:_ensure_client(function(client, cerr)
-    if cerr or not client then
-      on_session(nil, nil, cerr or { message = "client unavailable" })
+  self:_ensure_worktree(function(worktree, werr)
+    if werr or not worktree then
+      on_session(nil, nil, werr or { message = "worktree unavailable" })
       return
     end
-    if self.session_id then
-      on_session(client, self.session_id, nil)
-      return
-    end
-    local desired = { mode = self.mode, model = self.model }
-    client:new_session(vim.fn.getcwd(), function(result, err)
-      if self.client ~= client then
-        on_session(nil, nil, { message = "client replaced" })
+    self:_ensure_client(function(client, cerr)
+      if cerr or not client then
+        on_session(nil, nil, cerr or { message = "client unavailable" })
         return
       end
-      if err or not result or not result.sessionId then
-        vim.notify("acp: session/new failed: " .. vim.inspect(err), vim.log.levels.ERROR)
-        on_session(nil, nil, err or { message = "session/new failed" })
+      if self.session_id then
+        on_session(client, self.session_id, nil)
         return
       end
-      self.session_id = result.sessionId
-      self:_set_config_options(result.configOptions)
-      client:subscribe(result.sessionId, {
-        on_update = function(update)
-          self:_handle_update(update)
-        end,
-        on_request_permission = function(request, respond)
-          self:_handle_permission(request, respond)
-        end,
-      })
-      self:_apply_initial_session_config(desired, function()
-        on_session(client, result.sessionId, nil)
+      local desired = { mode = self.mode, model = self.model }
+      client:new_session(worktree.cwd, function(result, err)
+        if self.client ~= client then
+          on_session(nil, nil, { message = "client replaced" })
+          return
+        end
+        if err or not result or not result.sessionId then
+          vim.notify("acp: session/new failed: " .. vim.inspect(err), vim.log.levels.ERROR)
+          on_session(nil, nil, err or { message = "session/new failed" })
+          return
+        end
+        self.session_id = result.sessionId
+        self:_set_config_options(result.configOptions)
+        client:subscribe(result.sessionId, {
+          on_update = function(update)
+            self:_handle_update(update)
+          end,
+          on_request_permission = function(request, respond)
+            self:_handle_permission(request, respond)
+          end,
+        })
+        self:_apply_initial_session_config(desired, function()
+          on_session(client, result.sessionId, nil)
+        end)
       end)
     end)
   end)
@@ -398,9 +451,11 @@ end
 
 ---@param prompt string
 ---@param user_id string
-function Chat:_submit_prompt(prompt, user_id)
+---@param retried_session? boolean
+function Chat:_submit_prompt(prompt, user_id, retried_session)
   self.in_flight = true
   self.response_started = false
+  self.cancel_requested = false
   self.history:set_user_status(user_id, "active")
   self.widget:clear_input()
   self:_set_turn_activity("waiting", "Starting session")
@@ -420,21 +475,50 @@ function Chat:_submit_prompt(prompt, user_id)
       return
     end
     self:_set_turn_activity("waiting", "Waiting for model")
-    client:prompt(session_id, { { type = "text", text = prompt } }, function(result, err)
-      vim.schedule(function()
-        if err then
-          local m = type(err) == "table" and (err.message or vim.inspect(err)) or tostring(err)
-          self.history:add_agent_chunk("agent", "\n_error: " .. m .. "_")
-        elseif result and result.stopReason and result.stopReason ~= "end_turn" then
-          self.history:add_agent_chunk("agent", "\n_stopped: " .. tostring(result.stopReason) .. "_")
-        end
-        self:_set_activity(nil)
-        self.widget:render()
-        self.in_flight = false
-        self.response_started = false
-        self:_notify_or_continue()
-      end)
-    end)
+    client:prompt(
+      session_id,
+      ReferenceMentions.to_prompt_blocks(prompt, self.worktree and self.worktree.cwd),
+      function(result, err)
+        vim.schedule(function()
+          if self.client ~= client or self.session_id ~= session_id then
+            return
+          end
+          local was_cancelled = self.cancel_requested or is_cancel_result(result)
+          if err and is_session_missing(err) and not retried_session then
+            self.client = nil
+            self.session_id = nil
+            self:_set_turn_activity("waiting", "Restarting session")
+            self.widget:render()
+            self:_submit_prompt(prompt, user_id, true)
+            return
+          end
+          if err and not (was_cancelled and is_transport_disconnected(err)) then
+            local m = error_message(err)
+            self.history:add_agent_chunk("agent", "\n_error: " .. m .. "_")
+          elseif
+            result
+            and result.stopReason
+            and result.stopReason ~= "end_turn"
+            and result.stopReason ~= "cancelled"
+          then
+            self.history:add_agent_chunk("agent", "\n_stopped: " .. tostring(result.stopReason) .. "_")
+          end
+          if err and is_transport_disconnected(err) then
+            self.client = nil
+            self.session_id = nil
+          end
+          self:_set_activity(nil)
+          self.widget:render()
+          self.in_flight = false
+          self.response_started = false
+          self.cancel_requested = false
+          if self.worktree and self:_queued_count() == 0 then
+            DiffPreview.show_worktree(self.worktree, { focus = false })
+          end
+          self:_notify_or_continue()
+        end)
+      end
+    )
   end)
 end
 
@@ -449,6 +533,7 @@ end
 
 function Chat:cancel()
   if self.client and self.session_id and self.in_flight then
+    self.cancel_requested = true
     self:_set_turn_activity("waiting", "Cancelling")
     self.client:cancel(self.session_id)
   end
@@ -467,9 +552,28 @@ function Chat:_reset_session()
   self.session_id = nil
   self.in_flight = false
   self.response_started = false
+  self.cancel_requested = false
   self.queued_prompts = {}
   self:_set_activity(nil)
   self.config_options = {}
+end
+
+function Chat:show_diff()
+  DiffPreview.show_worktree(self.worktree, { focus = true })
+end
+
+function Chat:accept_all()
+  if DiffPreview.accept_all() then
+    self.worktree = nil
+    self:_reset_session()
+  end
+end
+
+function Chat:discard_all()
+  if DiffPreview.discard_all() then
+    self.worktree = nil
+    self:_reset_session()
+  end
 end
 
 function Chat:stop()
@@ -591,6 +695,18 @@ end
 
 function M.cancel()
   for_current_tab():cancel()
+end
+
+function M.diff()
+  for_current_tab():show_diff()
+end
+
+function M.accept_all()
+  for_current_tab():accept_all()
+end
+
+function M.discard_all()
+  for_current_tab():discard_all()
 end
 
 function M.stop()
