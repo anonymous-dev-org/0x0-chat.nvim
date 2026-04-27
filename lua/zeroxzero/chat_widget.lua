@@ -12,13 +12,13 @@ local STATUS_ICONS = {
 }
 
 local STATUS_HL = {
-  pending = "Comment",
-  in_progress = "DiagnosticInfo",
-  completed = "DiagnosticOk",
-  failed = "DiagnosticError",
+  pending = "ZeroChatStatusPending",
+  in_progress = "ZeroChatStatusInProgress",
+  completed = "ZeroChatStatusCompleted",
+  failed = "ZeroChatStatusFailed",
 }
 
-local PERMISSION_PENDING_HL = "WarningMsg"
+local PERMISSION_PENDING_HL = "ZeroChatStatusPending"
 local PERMISSION_DECIDED_HL = "Comment"
 
 local ACTIVITY_SPINNER = { "⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏" }
@@ -47,6 +47,7 @@ local KEY_TO_KIND = {
 ---@field input_win integer|nil
 ---@field rendered_count integer
 ---@field tool_extmarks table<string, integer>
+---@field user_extmarks table<string, integer>
 ---@field permission_pending string|nil
 ---@field permission_keymap_set boolean
 ---@field last_kind string|nil
@@ -75,6 +76,7 @@ function ChatWidget.new(tab_page_id, history, on_submit, on_cancel)
     input_win = nil,
     rendered_count = 0,
     tool_extmarks = {},
+    user_extmarks = {},
     permission_pending = nil,
     permission_keymap_set = false,
     last_kind = nil,
@@ -92,6 +94,13 @@ end
 
 local function win_valid(winid)
   return winid and api.nvim_win_is_valid(winid)
+end
+
+local function setup_highlights()
+  api.nvim_set_hl(0, "ZeroChatStatusPending", { link = "DiagnosticVirtualTextWarn", default = true })
+  api.nvim_set_hl(0, "ZeroChatStatusInProgress", { link = "DiagnosticVirtualTextInfo", default = true })
+  api.nvim_set_hl(0, "ZeroChatStatusCompleted", { link = "DiagnosticVirtualTextOk", default = true })
+  api.nvim_set_hl(0, "ZeroChatStatusFailed", { link = "DiagnosticVirtualTextError", default = true })
 end
 
 local function tab_win_for_buf(tab_page_id, bufnr)
@@ -120,6 +129,7 @@ function ChatWidget:_ensure_transcript_buf()
   self.transcript_buf = bufnr
   self.rendered_count = 0
   self.tool_extmarks = {}
+  self.user_extmarks = {}
   self.last_kind = nil
   self.activity_extmark = nil
   return bufnr
@@ -249,6 +259,7 @@ function ChatWidget:reset()
   self:clear_input()
   self.rendered_count = 0
   self.tool_extmarks = {}
+  self.user_extmarks = {}
   self.last_kind = nil
   self:set_activity(nil)
 end
@@ -379,6 +390,13 @@ local AGENT_HEADERS = {
   thought = "## Thinking",
 }
 
+local function user_header(msg)
+  if msg.status == "queued" then
+    return "## Next message"
+  end
+  return "## User"
+end
+
 ---@param msg table
 ---@return string|nil hl_group
 local function line_hl_for(msg)
@@ -408,12 +426,25 @@ function ChatWidget:render()
   if not buf_valid(bufnr) then
     return
   end
+  setup_highlights()
   local messages = self.history.messages
   vim.bo[bufnr].modifiable = true
 
   -- Patch in-place: tool_call updates and permission decisions on already-rendered messages.
   for i = 1, math.min(self.rendered_count, #messages) do
     local msg = messages[i]
+    if msg.type == "user" and msg.id then
+      local mark = self.user_extmarks[msg.id]
+      if mark then
+        local pos = api.nvim_buf_get_extmark_by_id(bufnr, NS, mark, {})
+        if pos[1] then
+          api.nvim_buf_set_lines(bufnr, pos[1], pos[1] + 1, false, { user_header(msg) })
+          api.nvim_buf_del_extmark(bufnr, NS, mark)
+          self.user_extmarks[msg.id] = api.nvim_buf_set_extmark(bufnr, NS, pos[1], 0, {})
+        end
+      end
+    end
+
     local mark = msg.tool_call_id and self.tool_extmarks[msg.tool_call_id]
     if mark then
       local pos = api.nvim_buf_get_extmark_by_id(bufnr, NS, mark, {})
@@ -441,12 +472,16 @@ function ChatWidget:render()
       if api.nvim_buf_line_count(bufnr) == 1 and api.nvim_buf_get_lines(bufnr, 0, 1, false)[1] == "" then
         lines = {}
       end
-      lines[#lines + 1] = "## User"
+      local header_index = #lines + 1
+      lines[#lines + 1] = user_header(msg)
       lines[#lines + 1] = ""
       for _, line in ipairs(vim.split(msg.text or "", "\n", { plain = true })) do
         lines[#lines + 1] = line
       end
-      append_lines(bufnr, lines)
+      local start_line = append_lines(bufnr, lines)
+      if msg.id then
+        self.user_extmarks[msg.id] = api.nvim_buf_set_extmark(bufnr, NS, start_line + header_index - 1, 0, {})
+      end
       self.last_kind = "user"
     elseif msg.type == "agent" or msg.type == "thought" then
       if self.last_kind ~= msg.type then

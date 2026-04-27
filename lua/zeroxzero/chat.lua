@@ -32,6 +32,7 @@ end
 ---@field widget zeroxzero.ChatWidget
 ---@field in_flight boolean
 ---@field response_started boolean
+---@field queued_prompts table[]
 local Chat = {}
 Chat.__index = Chat
 
@@ -49,6 +50,7 @@ function Chat.new(tab_page_id)
     history = History.new(),
     in_flight = false,
     response_started = false,
+    queued_prompts = {},
   }, Chat)
   self.widget = ChatWidget.new(tab_page_id, self.history, function()
     self:submit()
@@ -70,13 +72,31 @@ function Chat:_mark_responding(label)
     return
   end
   self.response_started = true
-  self:_set_activity("responding", label or "Model responding")
+  self:_set_turn_activity("responding", label or "Model responding")
 end
 
 function Chat:_render()
   vim.schedule(function()
     self.widget:render()
   end)
+end
+
+---@return integer
+function Chat:_queued_count()
+  return #self.queued_prompts
+end
+
+---@param state string|nil
+---@param label string|nil
+function Chat:_set_turn_activity(state, label)
+  local queued = self:_queued_count()
+  if label then
+    label = label:gsub("%s%(%d+ queued%)$", "")
+  end
+  if state and queued > 0 then
+    label = ("%s (%d queued)"):format(label or "Working", queued)
+  end
+  self:_set_activity(state, label)
 end
 
 local function describe_tool(tool_call)
@@ -104,7 +124,7 @@ function Chat:_handle_update(update)
       return
     end
     if self.in_flight then
-      self:_set_activity("waiting", "Running tool")
+      self:_set_turn_activity("waiting", "Running tool")
     end
     self.history:add({
       type = "tool_call",
@@ -120,9 +140,9 @@ function Chat:_handle_update(update)
     end
     if self.in_flight then
       if update.status == "completed" or update.status == "failed" then
-        self:_set_activity("waiting", "Waiting for model")
+        self:_set_turn_activity("waiting", "Waiting for model")
       else
-        self:_set_activity("waiting", "Running tool")
+        self:_set_turn_activity("waiting", "Running tool")
       end
     end
     local patch = {}
@@ -149,7 +169,7 @@ function Chat:_handle_permission(request, respond)
       return
     end
     if self.in_flight then
-      self:_set_activity("waiting", "Waiting for permission")
+      self:_set_turn_activity("waiting", "Waiting for permission")
     end
     local tool_call = request.toolCall or {}
     local tool_call_id = tool_call.toolCallId or tostring(vim.loop.hrtime())
@@ -166,7 +186,7 @@ function Chat:_handle_permission(request, respond)
     self.widget:bind_permission_keys(tool_call_id, request.options or {}, function(option_id, option_name)
       self.history:set_permission_decision(tool_call_id, option_name or option_id or "rejected")
       if self.in_flight then
-        self:_set_activity("waiting", "Waiting for model")
+        self:_set_turn_activity("waiting", "Waiting for model")
       end
       self.widget:render()
       respond(option_id)
@@ -365,14 +385,25 @@ function Chat:submit()
     return
   end
   if self.in_flight then
-    vim.notify("acp: prompt already in flight", vim.log.levels.WARN)
+    local id = self.history:add_user(prompt, "queued")
+    table.insert(self.queued_prompts, { id = id, text = prompt })
+    self.widget:clear_input()
+    self:_set_turn_activity(self.widget.activity_state or "waiting", self.widget.activity_label or "Working")
+    self.widget:render()
     return
   end
+  local id = self.history:add_user(prompt, "active")
+  self:_submit_prompt(prompt, id)
+end
+
+---@param prompt string
+---@param user_id string
+function Chat:_submit_prompt(prompt, user_id)
   self.in_flight = true
   self.response_started = false
-  self.history:add({ type = "user", text = prompt })
+  self.history:set_user_status(user_id, "active")
   self.widget:clear_input()
-  self:_set_activity("waiting", "Starting session")
+  self:_set_turn_activity("waiting", "Starting session")
   self.widget:render()
 
   self:_ensure_session(function(client, session_id, sess_err)
@@ -384,10 +415,11 @@ function Chat:submit()
         self.widget:render()
         self.in_flight = false
         self.response_started = false
+        self:_notify_or_continue()
       end)
       return
     end
-    self:_set_activity("waiting", "Waiting for model")
+    self:_set_turn_activity("waiting", "Waiting for model")
     client:prompt(session_id, { { type = "text", text = prompt } }, function(result, err)
       vim.schedule(function()
         if err then
@@ -400,15 +432,24 @@ function Chat:submit()
         self.widget:render()
         self.in_flight = false
         self.response_started = false
-        notify_user("ZeroChatTurnEnd")
+        self:_notify_or_continue()
       end)
     end)
   end)
 end
 
+function Chat:_notify_or_continue()
+  local next_prompt = table.remove(self.queued_prompts, 1)
+  if next_prompt then
+    self:_submit_prompt(next_prompt.text, next_prompt.id)
+    return
+  end
+  notify_user("ZeroChatTurnEnd")
+end
+
 function Chat:cancel()
   if self.client and self.session_id and self.in_flight then
-    self:_set_activity("waiting", "Cancelling")
+    self:_set_turn_activity("waiting", "Cancelling")
     self.client:cancel(self.session_id)
   end
 end
@@ -426,6 +467,7 @@ function Chat:_reset_session()
   self.session_id = nil
   self.in_flight = false
   self.response_started = false
+  self.queued_prompts = {}
   self:_set_activity(nil)
   self.config_options = {}
 end

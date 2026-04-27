@@ -1,6 +1,8 @@
 ---@class zeroxzero.history.UserMessage
 ---@field type "user"
+---@field id string
 ---@field text string
+---@field status? "active"|"queued"
 
 ---@class zeroxzero.history.AgentMessage
 ---@field type "agent"|"thought"
@@ -28,17 +30,40 @@
 
 ---@class zeroxzero.History
 ---@field messages zeroxzero.history.Message[]
+---@field next_id integer
 local History = {}
 History.__index = History
 
 ---@return zeroxzero.History
 function History.new()
-  return setmetatable({ messages = {} }, History)
+  return setmetatable({ messages = {}, next_id = 1 }, History)
 end
 
 ---@param msg zeroxzero.history.Message
 function History:add(msg)
   table.insert(self.messages, msg)
+end
+
+---@param text string
+---@param status? "active"|"queued"
+---@return string id
+function History:add_user(text, status)
+  local id = tostring(self.next_id)
+  self.next_id = self.next_id + 1
+  self:add({ type = "user", id = id, text = text, status = status or "active" })
+  return id
+end
+
+---@param id string
+---@param status "active"|"queued"
+function History:set_user_status(id, status)
+  for i = #self.messages, 1, -1 do
+    local msg = self.messages[i]
+    if msg.type == "user" and msg.id == id then
+      msg.status = status
+      return
+    end
+  end
 end
 
 ---@param kind "agent"|"thought"
@@ -73,6 +98,7 @@ end
 
 function History:clear()
   self.messages = {}
+  self.next_id = 1
 end
 
 return History
