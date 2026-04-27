@@ -35,7 +35,7 @@ end
 ---@field widget zeroxzero.ChatWidget
 ---@field in_flight boolean
 ---@field response_started boolean
----@field queued_prompts table[]
+---@field input_queued boolean
 ---@field cancel_requested boolean
 ---@field worktree table|nil
 local Chat = {}
@@ -55,7 +55,7 @@ function Chat.new(tab_page_id)
     history = History.new(),
     in_flight = false,
     response_started = false,
-    queued_prompts = {},
+    input_queued = false,
     cancel_requested = false,
     worktree = nil,
   }, Chat)
@@ -90,7 +90,7 @@ end
 
 ---@return integer
 function Chat:_queued_count()
-  return #self.queued_prompts
+  return self.input_queued and 1 or 0
 end
 
 ---@param state string|nil
@@ -449,9 +449,7 @@ function Chat:submit()
     return
   end
   if self.in_flight then
-    local id = self.history:add_user(prompt, "queued")
-    table.insert(self.queued_prompts, { id = id, text = prompt })
-    self.widget:clear_input()
+    self.input_queued = true
     self:_set_turn_activity(self.widget.activity_state or "waiting", self.widget.activity_label or "Working")
     self.widget:render()
     return
@@ -534,15 +532,21 @@ function Chat:_submit_prompt(prompt, user_id, retried_session)
 end
 
 function Chat:_notify_or_continue()
-  local next_prompt = table.remove(self.queued_prompts, 1)
-  if next_prompt then
-    self:_submit_prompt(next_prompt.text, next_prompt.id)
-    return
+  if self.input_queued then
+    self.input_queued = false
+    local prompt = self.widget:read_input()
+    if prompt ~= "" then
+      local id = self.history:add_user(prompt, "active")
+      self:_submit_prompt(prompt, id)
+      return
+    end
+    self.widget:render()
   end
   notify_user("ZeroChatTurnEnd")
 end
 
 function Chat:cancel()
+  self.input_queued = false
   if self.client and self.session_id and self.in_flight then
     self.cancel_requested = true
     self:_set_turn_activity("waiting", "Cancelling")
@@ -575,7 +579,7 @@ function Chat:_reset_session(opts)
   self.in_flight = false
   self.response_started = false
   self.cancel_requested = false
-  self.queued_prompts = {}
+  self.input_queued = false
   self:_set_activity(nil)
   self.config_options = {}
   if opts.discard_worktree ~= false then

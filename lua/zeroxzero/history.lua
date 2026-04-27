@@ -2,7 +2,7 @@
 ---@field type "user"
 ---@field id string
 ---@field text string
----@field status? "active"|"queued"
+---@field status? "active"
 
 ---@class zeroxzero.history.AgentMessage
 ---@field type "agent"|"thought"
@@ -45,7 +45,7 @@ function History:add(msg)
 end
 
 ---@param text string
----@param status? "active"|"queued"
+---@param status? "active"
 ---@return string id
 function History:add_user(text, status)
   local id = tostring(self.next_id)
@@ -55,7 +55,7 @@ function History:add_user(text, status)
 end
 
 ---@param id string
----@param status "active"|"queued"
+---@param status "active"
 function History:set_user_status(id, status)
   for i = #self.messages, 1, -1 do
     local msg = self.messages[i]

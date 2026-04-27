@@ -440,13 +440,6 @@ local AGENT_HEADERS = {
   thought = "## Thinking",
 }
 
-local function user_header(msg)
-  if msg.status == "queued" then
-    return "## Next message"
-  end
-  return "## User"
-end
-
 ---@param msg table
 ---@return string|nil hl_group
 local function line_hl_for(msg)
@@ -523,7 +516,7 @@ function ChatWidget:render()
         lines = {}
       end
       local header_index = #lines + 1
-      lines[#lines + 1] = user_header(msg)
+      lines[#lines + 1] = "## User"
       lines[#lines + 1] = ""
       for _, line in ipairs(vim.split(msg.text or "", "\n", { plain = true })) do
         lines[#lines + 1] = line
