@@ -11,6 +11,22 @@ local STATUS_ICONS = {
   failed = "✗",
 }
 
+local STATUS_HL = {
+  pending = "Comment",
+  in_progress = "DiagnosticInfo",
+  completed = "DiagnosticOk",
+  failed = "DiagnosticError",
+}
+
+local PERMISSION_PENDING_HL = "WarningMsg"
+local PERMISSION_DECIDED_HL = "Comment"
+
+local ACTIVITY_SPINNER = { "⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏" }
+local ACTIVITY_LABELS = {
+  waiting = "Waiting for model",
+  responding = "Model responding",
+}
+
 local PERMISSION_HINT = "[a] allow once  [A] allow always  [r] reject once  [R] reject always"
 local PERMISSION_HINT_INLINE = "  — " .. PERMISSION_HINT
 local KEY_TO_KIND = {
@@ -34,6 +50,11 @@ local KEY_TO_KIND = {
 ---@field permission_pending string|nil
 ---@field permission_keymap_set boolean
 ---@field last_kind string|nil
+---@field activity_state string|nil
+---@field activity_label string|nil
+---@field activity_extmark integer|nil
+---@field activity_frame integer
+---@field activity_timer uv_timer_t|nil
 local ChatWidget = {}
 ChatWidget.__index = ChatWidget
 
@@ -57,6 +78,11 @@ function ChatWidget.new(tab_page_id, history, on_submit, on_cancel)
     permission_pending = nil,
     permission_keymap_set = false,
     last_kind = nil,
+    activity_state = nil,
+    activity_label = nil,
+    activity_extmark = nil,
+    activity_frame = 1,
+    activity_timer = nil,
   }, ChatWidget)
 end
 
@@ -95,6 +121,7 @@ function ChatWidget:_ensure_transcript_buf()
   self.rendered_count = 0
   self.tool_extmarks = {}
   self.last_kind = nil
+  self.activity_extmark = nil
   return bufnr
 end
 
@@ -207,6 +234,79 @@ function ChatWidget:reset()
   self.rendered_count = 0
   self.tool_extmarks = {}
   self.last_kind = nil
+  self:set_activity(nil)
+end
+
+function ChatWidget:_stop_activity_timer()
+  if not self.activity_timer then
+    return
+  end
+  self.activity_timer:stop()
+  self.activity_timer:close()
+  self.activity_timer = nil
+end
+
+function ChatWidget:_ensure_activity_timer()
+  if self.activity_timer then
+    return
+  end
+  local timer = vim.loop.new_timer()
+  self.activity_timer = timer
+  timer:start(
+    0,
+    120,
+    vim.schedule_wrap(function()
+      if not self.activity_state then
+        self:_stop_activity_timer()
+        return
+      end
+      self.activity_frame = (self.activity_frame % #ACTIVITY_SPINNER) + 1
+      self:_render_activity()
+    end)
+  )
+  pcall(function()
+    timer:unref()
+  end)
+end
+
+function ChatWidget:_render_activity()
+  local bufnr = self.transcript_buf
+  if not buf_valid(bufnr) then
+    return
+  end
+
+  if self.activity_extmark then
+    pcall(api.nvim_buf_del_extmark, bufnr, NS, self.activity_extmark)
+    self.activity_extmark = nil
+  end
+  if not self.activity_state then
+    return
+  end
+
+  local spinner = ACTIVITY_SPINNER[self.activity_frame] or ACTIVITY_SPINNER[1]
+  local label = self.activity_label or ACTIVITY_LABELS[self.activity_state] or "Working"
+  local last_line = math.max(api.nvim_buf_line_count(bufnr) - 1, 0)
+  self.activity_extmark = api.nvim_buf_set_extmark(bufnr, NS, last_line, 0, {
+    virt_lines = { { { spinner .. " " .. label, "Comment" } } },
+    virt_lines_above = false,
+  })
+end
+
+---@param state string|nil
+---@param label string|nil
+function ChatWidget:set_activity(state, label)
+  if self.activity_state == state and self.activity_label == label then
+    return
+  end
+  self.activity_state = state
+  self.activity_label = label
+  self.activity_frame = 1
+  if state then
+    self:_ensure_activity_timer()
+  else
+    self:_stop_activity_timer()
+  end
+  self:_render_activity()
 end
 
 local function format_tool_line(tool)
@@ -263,6 +363,30 @@ local AGENT_HEADERS = {
   thought = "## Thinking",
 }
 
+---@param msg table
+---@return string|nil hl_group
+local function line_hl_for(msg)
+  if msg.type == "tool_call" then
+    return STATUS_HL[msg.status]
+  elseif msg.type == "permission" then
+    if msg.decision then
+      return PERMISSION_DECIDED_HL
+    end
+    return PERMISSION_PENDING_HL
+  end
+  return nil
+end
+
+---@param bufnr integer
+---@param row integer
+---@param msg table
+---@return integer
+local function place_status_extmark(bufnr, row, msg)
+  return api.nvim_buf_set_extmark(bufnr, NS, row, 0, {
+    line_hl_group = line_hl_for(msg),
+  })
+end
+
 function ChatWidget:render()
   local bufnr = self.transcript_buf
   if not buf_valid(bufnr) then
@@ -286,6 +410,8 @@ function ChatWidget:render()
         end
         if line then
           api.nvim_buf_set_lines(bufnr, pos[1], pos[1] + 1, false, { line })
+          api.nvim_buf_del_extmark(bufnr, NS, mark)
+          self.tool_extmarks[msg.tool_call_id] = place_status_extmark(bufnr, pos[1], msg)
         end
       end
     end
@@ -314,17 +440,18 @@ function ChatWidget:render()
       self.last_kind = msg.type
     elseif msg.type == "tool_call" then
       local start_line = append_lines(bufnr, { "", format_tool_line(msg) })
-      self.tool_extmarks[msg.tool_call_id] = api.nvim_buf_set_extmark(bufnr, NS, start_line + 1, 0, {})
+      self.tool_extmarks[msg.tool_call_id] = place_status_extmark(bufnr, start_line + 1, msg)
       self.last_kind = "tool_call"
     elseif msg.type == "permission" then
       local start_line = append_lines(bufnr, { "", format_permission_line(msg) })
-      self.tool_extmarks[msg.tool_call_id] = api.nvim_buf_set_extmark(bufnr, NS, start_line + 1, 0, {})
+      self.tool_extmarks[msg.tool_call_id] = place_status_extmark(bufnr, start_line + 1, msg)
       self.last_kind = "permission"
     end
   end
 
   self.rendered_count = #messages
   vim.bo[bufnr].modifiable = false
+  self:_render_activity()
   self:_scroll_to_end()
 end
 

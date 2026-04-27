@@ -11,6 +11,7 @@ local M = {}
 ---@field provider string
 ---@field width number
 ---@field input_height integer
+---@field sound string|false
 ---@field providers table<string, zeroxzero.ProviderConfig>
 
 ---@type zeroxzero.Config
@@ -18,6 +19,7 @@ M.defaults = {
   provider = "claude-acp",
   width = 0.4,
   input_height = 8,
+  sound = vim.fn.has("mac") == 1 and "/System/Library/Sounds/Blow.aiff" or false,
   providers = {
     ["claude-acp"] = {
       name = "Claude ACP",

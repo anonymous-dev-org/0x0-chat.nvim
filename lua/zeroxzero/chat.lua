@@ -5,6 +5,21 @@ local ChatWidget = require("zeroxzero.chat_widget")
 
 local api = vim.api
 
+local function notify_user(pattern)
+  pcall(api.nvim_exec_autocmds, "User", { pattern = pattern })
+  local sound = config.current.sound
+  if type(sound) == "string" and sound ~= "" and vim.fn.executable("afplay") == 1 then
+    pcall(vim.fn.jobstart, { "afplay", sound }, { detach = true })
+  end
+  pcall(function()
+    local f = io.open("/dev/tty", "w")
+    if f then
+      f:write("\a")
+      f:close()
+    end
+  end)
+end
+
 ---@class zeroxzero.Chat
 ---@field tab_page_id integer
 ---@field client table|nil
@@ -16,6 +31,7 @@ local api = vim.api
 ---@field history zeroxzero.History
 ---@field widget zeroxzero.ChatWidget
 ---@field in_flight boolean
+---@field response_started boolean
 local Chat = {}
 Chat.__index = Chat
 
@@ -32,6 +48,7 @@ function Chat.new(tab_page_id)
     config_options = {},
     history = History.new(),
     in_flight = false,
+    response_started = false,
   }, Chat)
   self.widget = ChatWidget.new(tab_page_id, self.history, function()
     self:submit()
@@ -39,6 +56,21 @@ function Chat.new(tab_page_id)
     self:cancel()
   end)
   return self
+end
+
+---@param state string|nil
+---@param label string|nil
+function Chat:_set_activity(state, label)
+  self.widget:set_activity(state, label)
+end
+
+---@param label string|nil
+function Chat:_mark_responding(label)
+  if not self.in_flight then
+    return
+  end
+  self.response_started = true
+  self:_set_activity("responding", label or "Model responding")
 end
 
 function Chat:_render()
@@ -63,12 +95,16 @@ function Chat:_handle_update(update)
     if text == "" then
       return
     end
+    self:_mark_responding(kind == "agent_thought_chunk" and "Model thinking" or "Model responding")
     local msg_kind = kind == "agent_thought_chunk" and "thought" or "agent"
     self.history:add_agent_chunk(msg_kind, text)
     self:_render()
   elseif kind == "tool_call" then
     if not update.toolCallId then
       return
+    end
+    if self.in_flight then
+      self:_set_activity("waiting", "Running tool")
     end
     self.history:add({
       type = "tool_call",
@@ -81,6 +117,13 @@ function Chat:_handle_update(update)
   elseif kind == "tool_call_update" then
     if not update.toolCallId then
       return
+    end
+    if self.in_flight then
+      if update.status == "completed" or update.status == "failed" then
+        self:_set_activity("waiting", "Waiting for model")
+      else
+        self:_set_activity("waiting", "Running tool")
+      end
     end
     local patch = {}
     if update.status then
@@ -105,6 +148,9 @@ function Chat:_handle_permission(request, respond)
       respond("reject_once")
       return
     end
+    if self.in_flight then
+      self:_set_activity("waiting", "Waiting for permission")
+    end
     local tool_call = request.toolCall or {}
     local tool_call_id = tool_call.toolCallId or tostring(vim.loop.hrtime())
     local kind, title = describe_tool(tool_call)
@@ -116,8 +162,12 @@ function Chat:_handle_permission(request, respond)
       options = request.options or {},
     })
     self.widget:render()
+    notify_user("ZeroChatPermission")
     self.widget:bind_permission_keys(tool_call_id, request.options or {}, function(option_id, option_name)
       self.history:set_permission_decision(tool_call_id, option_name or option_id or "rejected")
+      if self.in_flight then
+        self:_set_activity("waiting", "Waiting for model")
+      end
       self.widget:render()
       respond(option_id)
     end)
@@ -307,8 +357,10 @@ function Chat:submit()
     return
   end
   self.in_flight = true
+  self.response_started = false
   self.history:add({ type = "user", text = prompt })
   self.widget:clear_input()
+  self:_set_activity("waiting", "Starting session")
   self.widget:render()
 
   self:_ensure_session(function(client, session_id, sess_err)
@@ -316,11 +368,14 @@ function Chat:submit()
       vim.schedule(function()
         local msg = sess_err and (sess_err.message or vim.inspect(sess_err)) or "failed to start session"
         self.history:add_agent_chunk("agent", "_error: " .. msg .. "_")
+        self:_set_activity(nil)
         self.widget:render()
         self.in_flight = false
+        self.response_started = false
       end)
       return
     end
+    self:_set_activity("waiting", "Waiting for model")
     client:prompt(session_id, { { type = "text", text = prompt } }, function(result, err)
       vim.schedule(function()
         if err then
@@ -329,8 +384,11 @@ function Chat:submit()
         elseif result and result.stopReason and result.stopReason ~= "end_turn" then
           self.history:add_agent_chunk("agent", "\n_stopped: " .. tostring(result.stopReason) .. "_")
         end
+        self:_set_activity(nil)
         self.widget:render()
         self.in_flight = false
+        self.response_started = false
+        notify_user("ZeroChatTurnEnd")
       end)
     end)
   end)
@@ -338,6 +396,7 @@ end
 
 function Chat:cancel()
   if self.client and self.session_id and self.in_flight then
+    self:_set_activity("waiting", "Cancelling")
     self.client:cancel(self.session_id)
   end
 end
@@ -354,6 +413,8 @@ function Chat:_reset_session()
   self.client = nil
   self.session_id = nil
   self.in_flight = false
+  self.response_started = false
+  self:_set_activity(nil)
   self.config_options = {}
 end
 
