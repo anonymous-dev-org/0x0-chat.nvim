@@ -7,8 +7,8 @@ function M.setup(opts)
   config.setup(opts)
 
   vim.api.nvim_create_user_command("ZeroChat", function()
-    require("zeroxzero.chat").open()
-  end, { desc = "Open the 0x0 chat buffer" })
+    require("zeroxzero.chat").toggle()
+  end, { desc = "Toggle the 0x0 chat panel for the current tab" })
 
   vim.api.nvim_create_user_command("ZeroChatNew", function()
     require("zeroxzero.chat").new()

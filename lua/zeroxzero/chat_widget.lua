@@ -197,6 +197,22 @@ function ChatWidget:close()
   self.transcript_win = nil
 end
 
+---@return boolean
+function ChatWidget:is_open()
+  if not api.nvim_tabpage_is_valid(self.tab_page_id) then
+    return false
+  end
+  if win_valid(self.transcript_win) and api.nvim_win_get_tabpage(self.transcript_win) == self.tab_page_id then
+    return true
+  end
+  if win_valid(self.input_win) and api.nvim_win_get_tabpage(self.input_win) == self.tab_page_id then
+    return true
+  end
+  -- Fall back to scanning the tabpage in case win handles got out of sync.
+  return tab_win_for_buf(self.tab_page_id, self.transcript_buf) ~= nil
+    or tab_win_for_buf(self.tab_page_id, self.input_buf) ~= nil
+end
+
 function ChatWidget:focus_input()
   if not win_valid(self.input_win) then
     self.input_win = tab_win_for_buf(self.tab_page_id, self.input_buf)

@@ -339,6 +339,18 @@ function Chat:open()
   self.widget:open()
 end
 
+function Chat:close()
+  self.widget:close()
+end
+
+function Chat:toggle()
+  if self.widget:is_open() then
+    self.widget:close()
+  else
+    self.widget:open()
+  end
+end
+
 function Chat:new_session()
   self:_reset_session()
   self.history:clear()
@@ -517,6 +529,14 @@ local M = {}
 
 function M.open()
   for_current_tab():open()
+end
+
+function M.close()
+  for_current_tab():close()
+end
+
+function M.toggle()
+  for_current_tab():toggle()
 end
 
 function M.new()
