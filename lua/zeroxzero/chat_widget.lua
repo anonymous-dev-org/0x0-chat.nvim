@@ -1,5 +1,6 @@
 local config = require("zeroxzero.config")
 local file_completion = require("zeroxzero.file_completion")
+local Line = require("zeroxzero.line")
 
 local api = vim.api
 
@@ -19,6 +20,11 @@ local STATUS_HL = {
   failed = "ZeroChatStatusFailed",
 }
 
+local STATE_HL = {
+  waiting = "ZeroChatHeaderStateWaiting",
+  responding = "ZeroChatHeaderStateResponding",
+}
+
 local PERMISSION_PENDING_HL = "ZeroChatStatusPending"
 local PERMISSION_DECIDED_HL = "Comment"
 
@@ -28,13 +34,19 @@ local ACTIVITY_LABELS = {
   responding = "Model responding",
 }
 
-local PERMISSION_HINT = "[a] allow once  [A] allow always  [r] reject once  [R] reject always"
-local PERMISSION_HINT_INLINE = "  — " .. PERMISSION_HINT
+local PERMISSION_HINT_INLINE = "  — [a] allow once  [A] allow always  [r] reject once  [R] reject always"
 local KEY_TO_KIND = {
   a = "allow_once",
   A = "allow_always",
   r = "reject_once",
   R = "reject_always",
+}
+
+local INPUT_HINTS = {
+  { "<CR>", "submit" },
+  { "<lc>c", "cancel" },
+  { "<lc>d", "diff" },
+  { "@", "files" },
 }
 
 ---@class zeroxzero.ChatWidget
@@ -64,13 +76,15 @@ ChatWidget.__index = ChatWidget
 ---@param history zeroxzero.History
 ---@param on_submit fun()
 ---@param on_cancel fun()
+---@param header_info? fun(): table
 ---@return zeroxzero.ChatWidget
-function ChatWidget.new(tab_page_id, history, on_submit, on_cancel)
+function ChatWidget.new(tab_page_id, history, on_submit, on_cancel, header_info)
   return setmetatable({
     tab_page_id = tab_page_id,
     history = history,
     on_submit = on_submit,
     on_cancel = on_cancel,
+    header_info = header_info,
     transcript_buf = nil,
     input_buf = nil,
     transcript_win = nil,
@@ -86,6 +100,9 @@ function ChatWidget.new(tab_page_id, history, on_submit, on_cancel)
     activity_extmark = nil,
     activity_frame = 1,
     activity_timer = nil,
+    prompt_history = {},
+    prompt_history_index = 0,
+    prompt_history_draft = nil,
   }, ChatWidget)
 end
 
@@ -97,11 +114,24 @@ local function win_valid(winid)
   return winid and api.nvim_win_is_valid(winid)
 end
 
-local function setup_highlights()
-  api.nvim_set_hl(0, "ZeroChatStatusPending", { link = "DiagnosticVirtualTextWarn", default = true })
-  api.nvim_set_hl(0, "ZeroChatStatusInProgress", { link = "DiagnosticVirtualTextInfo", default = true })
-  api.nvim_set_hl(0, "ZeroChatStatusCompleted", { link = "DiagnosticVirtualTextOk", default = true })
-  api.nvim_set_hl(0, "ZeroChatStatusFailed", { link = "DiagnosticVirtualTextError", default = true })
+local HIGHLIGHTS = {
+  ZeroChatStatusPending = "DiagnosticVirtualTextWarn",
+  ZeroChatStatusInProgress = "DiagnosticVirtualTextInfo",
+  ZeroChatStatusCompleted = "DiagnosticVirtualTextOk",
+  ZeroChatStatusFailed = "DiagnosticVirtualTextError",
+  ZeroChatHeader = "Title",
+  ZeroChatHeaderProvider = "Type",
+  ZeroChatHeaderModel = "Identifier",
+  ZeroChatHeaderMode = "Constant",
+  ZeroChatHeaderStateWaiting = "DiagnosticVirtualTextWarn",
+  ZeroChatHeaderStateResponding = "DiagnosticVirtualTextInfo",
+  ZeroChatHeaderStateIdle = "Comment",
+  ZeroChatHintKey = "Special",
+  ZeroChatHintLabel = "Comment",
+}
+
+for name, link in pairs(HIGHLIGHTS) do
+  api.nvim_set_hl(0, name, { link = link, default = true })
 end
 
 local function tab_win_for_buf(tab_page_id, bufnr)
@@ -127,6 +157,7 @@ function ChatWidget:_ensure_transcript_buf()
   vim.bo[bufnr].swapfile = false
   vim.bo[bufnr].filetype = "markdown"
   vim.bo[bufnr].modifiable = false
+  pcall(vim.treesitter.start, bufnr, "markdown")
   self.transcript_buf = bufnr
   self.rendered_count = 0
   self.tool_extmarks = {}
@@ -161,6 +192,12 @@ function ChatWidget:_ensure_input_buf()
     vim.schedule(file_completion.trigger)
     return "@"
   end, vim.tbl_extend("force", opts, { desc = "0x0 chat file mention", expr = true }))
+  vim.keymap.set({ "n", "i" }, "<C-p>", function()
+    self:nav_history(-1)
+  end, vim.tbl_extend("force", opts, { desc = "0x0 chat previous prompt" }))
+  vim.keymap.set({ "n", "i" }, "<C-n>", function()
+    self:nav_history(1)
+  end, vim.tbl_extend("force", opts, { desc = "0x0 chat next prompt" }))
 
   self.input_buf = bufnr
   return bufnr
@@ -186,6 +223,12 @@ function ChatWidget:open()
     api.nvim_win_set_width(self.transcript_win, width)
     vim.wo[self.transcript_win].wrap = true
     vim.wo[self.transcript_win].linebreak = true
+    pcall(function()
+      vim.wo[self.transcript_win].foldmethod = "expr"
+      vim.wo[self.transcript_win].foldexpr = "v:lua.vim.treesitter.foldexpr()"
+      vim.wo[self.transcript_win].foldlevel = 99
+      vim.wo[self.transcript_win].foldenable = true
+    end)
   end
 
   if need_input_win then
@@ -202,6 +245,9 @@ function ChatWidget:open()
   if win_valid(self.input_win) then
     api.nvim_set_current_win(self.input_win)
   end
+
+  self:_update_winbar()
+  self:_update_input_winbar()
 end
 
 function ChatWidget:close()
@@ -254,6 +300,71 @@ function ChatWidget:clear_input()
     return
   end
   api.nvim_buf_set_lines(self.input_buf, 0, -1, false, { "" })
+end
+
+---@param lines string[]
+function ChatWidget:prepend_input(lines)
+  self:_ensure_input_buf()
+  if #lines == 0 then
+    return
+  end
+  local existing = api.nvim_buf_get_lines(self.input_buf, 0, -1, false)
+  if #existing == 1 and existing[1] == "" then
+    existing = {}
+  end
+  local combined = {}
+  vim.list_extend(combined, lines)
+  vim.list_extend(combined, existing)
+  api.nvim_buf_set_lines(self.input_buf, 0, -1, false, combined)
+end
+
+---@param text string
+function ChatWidget:push_history(text)
+  if not text or text == "" then
+    return
+  end
+  if self.prompt_history[#self.prompt_history] == text then
+    self.prompt_history_index = 0
+    self.prompt_history_draft = nil
+    return
+  end
+  self.prompt_history[#self.prompt_history + 1] = text
+  if #self.prompt_history > 100 then
+    table.remove(self.prompt_history, 1)
+  end
+  self.prompt_history_index = 0
+  self.prompt_history_draft = nil
+end
+
+---@param direction integer -1 = older (C-p), 1 = newer (C-n)
+function ChatWidget:nav_history(direction)
+  if not buf_valid(self.input_buf) then
+    return
+  end
+  local total = #self.prompt_history
+  if total == 0 then
+    return
+  end
+  if self.prompt_history_index == 0 and direction == -1 then
+    local current = api.nvim_buf_get_lines(self.input_buf, 0, -1, false)
+    self.prompt_history_draft = table.concat(current, "\n")
+    self.prompt_history_index = total
+  elseif direction == -1 then
+    self.prompt_history_index = math.max(1, self.prompt_history_index - 1)
+  elseif direction == 1 then
+    self.prompt_history_index = self.prompt_history_index + 1
+    if self.prompt_history_index > total then
+      self.prompt_history_index = 0
+      local draft = self.prompt_history_draft or ""
+      api.nvim_buf_set_lines(self.input_buf, 0, -1, false, vim.split(draft, "\n", { plain = true }))
+      self.prompt_history_draft = nil
+      return
+    end
+  end
+  local entry = self.prompt_history[self.prompt_history_index]
+  if entry then
+    api.nvim_buf_set_lines(self.input_buf, 0, -1, false, vim.split(entry, "\n", { plain = true }))
+  end
 end
 
 function ChatWidget:reset()
@@ -320,9 +431,10 @@ function ChatWidget:_render_activity()
 
   local spinner = ACTIVITY_SPINNER[self.activity_frame] or ACTIVITY_SPINNER[1]
   local label = self.activity_label or ACTIVITY_LABELS[self.activity_state] or "Working"
+  local hl = STATE_HL[self.activity_state] or "Comment"
   local last_line = math.max(api.nvim_buf_line_count(bufnr) - 1, 0)
   self.activity_extmark = api.nvim_buf_set_extmark(bufnr, NS, last_line, 0, {
-    virt_lines = { { { spinner .. " " .. label, "Comment" } } },
+    virt_lines = { { { spinner .. " ", hl }, { label, "Comment" } } },
     virt_lines_above = false,
   })
 end
@@ -342,25 +454,78 @@ function ChatWidget:set_activity(state, label)
     self:_stop_activity_timer()
   end
   self:_render_activity()
+  self:_update_winbar()
+end
+
+function ChatWidget:_update_winbar()
+  if not win_valid(self.transcript_win) then
+    return
+  end
+  local info = self.header_info and self.header_info() or {}
+  local segments = { "%#ZeroChatHeader# 0x0 chat %*" }
+  if info.provider then
+    segments[#segments + 1] = "%#ZeroChatHeaderProvider#" .. info.provider .. "%*"
+  end
+  if info.model then
+    segments[#segments + 1] = "%#ZeroChatHeaderModel#" .. info.model .. "%*"
+  end
+  if info.mode then
+    segments[#segments + 1] = "%#ZeroChatHeaderMode#" .. info.mode .. "%*"
+  end
+  local state_hl = STATE_HL[self.activity_state or ""] or "ZeroChatHeaderStateIdle"
+  local state_label = self.activity_label or self.activity_state or "idle"
+  segments[#segments + 1] = "%=%#" .. state_hl .. "#" .. state_label .. "%*"
+  vim.wo[self.transcript_win].winbar = table.concat(segments, " │ ")
+end
+
+function ChatWidget:_update_input_winbar()
+  if not win_valid(self.input_win) then
+    return
+  end
+  local segments = {}
+  for _, hint in ipairs(INPUT_HINTS) do
+    segments[#segments + 1] = "%#ZeroChatHintKey#" .. hint[1] .. "%* %#ZeroChatHintLabel#" .. hint[2] .. "%*"
+  end
+  vim.wo[self.input_win].winbar = " " .. table.concat(segments, "  ")
 end
 
 local function format_tool_line(tool)
   local icon = STATUS_ICONS[tool.status] or "·"
+  local icon_hl = STATUS_HL[tool.status]
   local title = (tool.title and tool.title ~= "") and tool.title or "(no title)"
-  return ("%s %s — %s"):format(icon, tool.kind or "tool", title)
+  local kind = tool.kind or "tool"
+  return Line:new({
+    { icon, icon_hl },
+    { " ", nil },
+    { kind, "Identifier" },
+    { " — ", "Comment" },
+    { title, nil },
+  })
 end
 
 local function format_permission_line(perm)
-  local base = ("> tool request: `%s` %s"):format(perm.kind or "tool", perm.description or "")
+  local sections = {
+    { "> tool request: ", "Comment" },
+    { "`" .. (perm.kind or "tool") .. "`", "Identifier" },
+    { " ", nil },
+    { perm.description or "", nil },
+  }
   if perm.decision then
-    return base .. " — " .. perm.decision
+    table.insert(sections, { " — " .. perm.decision, PERMISSION_DECIDED_HL })
+  else
+    table.insert(sections, { PERMISSION_HINT_INLINE, "Comment" })
   end
-  return base .. PERMISSION_HINT_INLINE
+  return Line:new(sections)
 end
 
 local function format_activity_line(activity)
   local icon = STATUS_ICONS[activity.status] or STATUS_ICONS.completed
-  return ("%s %s"):format(icon, activity.text or "")
+  local icon_hl = STATUS_HL[activity.status]
+  return Line:new({
+    { icon, icon_hl },
+    { " ", nil },
+    { activity.text or "", nil },
+  })
 end
 
 ---@param bufnr integer
@@ -441,7 +606,6 @@ function ChatWidget:render()
   if not buf_valid(bufnr) then
     return
   end
-  setup_highlights()
   local messages = self.history.messages
   vim.bo[bufnr].modifiable = true
 
@@ -471,7 +635,8 @@ function ChatWidget:render()
           line = format_permission_line(msg)
         end
         if line then
-          api.nvim_buf_set_lines(bufnr, pos[1], pos[1] + 1, false, { line })
+          api.nvim_buf_set_lines(bufnr, pos[1], pos[1] + 1, false, { tostring(line) })
+          line:set_highlights(NS, bufnr, pos[1])
           api.nvim_buf_del_extmark(bufnr, NS, mark)
           self.tool_extmarks[msg.tool_call_id] = place_status_extmark(bufnr, pos[1], msg)
         end
@@ -505,17 +670,24 @@ function ChatWidget:render()
       append_chunk_text(bufnr, msg.text or "")
       self.last_kind = msg.type
     elseif msg.type == "tool_call" then
-      local start_line = append_lines(bufnr, { "", format_tool_line(msg) })
+      local line = format_tool_line(msg)
+      local start_line = append_lines(bufnr, { "", tostring(line) })
+      line:set_highlights(NS, bufnr, start_line + 1)
       self.tool_extmarks[msg.tool_call_id] = place_status_extmark(bufnr, start_line + 1, msg)
       self.last_kind = "tool_call"
     elseif msg.type == "permission" then
-      local start_line = append_lines(bufnr, { "", format_permission_line(msg) })
+      local line = format_permission_line(msg)
+      local start_line = append_lines(bufnr, { "", tostring(line) })
+      line:set_highlights(NS, bufnr, start_line + 1)
       self.tool_extmarks[msg.tool_call_id] = place_status_extmark(bufnr, start_line + 1, msg)
       self.last_kind = "permission"
     elseif msg.type == "activity" then
-      local lines = self.last_kind == "activity" and { format_activity_line(msg) } or { "", format_activity_line(msg) }
+      local line = format_activity_line(msg)
+      local lines = self.last_kind == "activity" and { tostring(line) } or { "", tostring(line) }
       local start_line = append_lines(bufnr, lines)
-      place_status_extmark(bufnr, start_line + #lines - 1, msg)
+      local row = start_line + #lines - 1
+      line:set_highlights(NS, bufnr, row)
+      place_status_extmark(bufnr, row, msg)
       self.last_kind = "activity"
     end
   end
@@ -523,6 +695,7 @@ function ChatWidget:render()
   self.rendered_count = #messages
   vim.bo[bufnr].modifiable = false
   self:_render_activity()
+  self:_update_winbar()
   self:_scroll_to_end()
 end
 

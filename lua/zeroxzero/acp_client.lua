@@ -6,7 +6,9 @@ local Client = {}
 Client.__index = Client
 
 ---@param provider { command: string, args?: string[], env?: table<string, string>, name?: string }
-function M.new(provider)
+---@param opts? { host_fs?: boolean }
+function M.new(provider, opts)
+  opts = opts or {}
   local self = setmetatable({
     provider = provider,
     state = "disconnected",
@@ -18,6 +20,7 @@ function M.new(provider)
     agent_info = nil,
     agent_capabilities = nil,
     protocol_version = 1,
+    host_fs = opts.host_fs and true or false,
   }, Client)
 
   self.transport = transport_mod.create(provider, {
@@ -94,6 +97,19 @@ function Client:respond(id, result)
   self.transport:send(data)
 end
 
+---@param id integer
+---@param code integer
+---@param message string
+---@param data? table
+function Client:respond_error(id, code, message, data)
+  local err = { code = code, message = message }
+  if data then
+    err.data = data
+  end
+  local payload = vim.json.encode({ jsonrpc = "2.0", id = id, error = err })
+  self.transport:send(payload)
+end
+
 ---@param method string
 ---@param handler fun(params: table, message_id: integer|nil)
 function Client:on_notification(method, handler)
@@ -159,6 +175,44 @@ function Client:start(on_ready)
     end)
   end)
 
+  self:on_notification("fs/read_text_file", function(params, message_id)
+    if message_id == nil then
+      return
+    end
+    local sub = self.subscribers[params.sessionId]
+    if not sub or not sub.on_fs_read_text_file then
+      self:respond_error(message_id, -32601, "fs/read_text_file not handled")
+      return
+    end
+    sub.on_fs_read_text_file(params, function(content, err)
+      if err then
+        local code = err.code or -32000
+        self:respond_error(message_id, code, err.message or tostring(err), err.data)
+        return
+      end
+      self:respond(message_id, { content = content or "" })
+    end)
+  end)
+
+  self:on_notification("fs/write_text_file", function(params, message_id)
+    if message_id == nil then
+      return
+    end
+    local sub = self.subscribers[params.sessionId]
+    if not sub or not sub.on_fs_write_text_file then
+      self:respond_error(message_id, -32601, "fs/write_text_file not handled")
+      return
+    end
+    sub.on_fs_write_text_file(params, function(err)
+      if err then
+        local code = err.code or -32000
+        self:respond_error(message_id, code, err.message or tostring(err), err.data)
+        return
+      end
+      self:respond(message_id, vim.empty_dict())
+    end)
+  end)
+
   self.transport:start()
   self.state = "initializing"
 
@@ -166,7 +220,10 @@ function Client:start(on_ready)
     protocolVersion = self.protocol_version,
     clientInfo = { name = "0x0-chat-nvim", version = "0.1.0" },
     clientCapabilities = {
-      fs = { readTextFile = false, writeTextFile = false },
+      fs = {
+        readTextFile = self.host_fs,
+        writeTextFile = self.host_fs,
+      },
       terminal = false,
     },
   }, function(result, err)

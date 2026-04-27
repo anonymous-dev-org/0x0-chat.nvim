@@ -1,10 +1,12 @@
 local config = require("zeroxzero.config")
 local acp_client = require("zeroxzero.acp_client")
-local DiffPreview = require("zeroxzero.diff_preview")
 local History = require("zeroxzero.history")
+local HistoryStore = require("zeroxzero.history_store")
 local ChatWidget = require("zeroxzero.chat_widget")
 local ReferenceMentions = require("zeroxzero.reference_mentions")
-local ShadowWorktree = require("zeroxzero.shadow_worktree")
+local Checkpoint = require("zeroxzero.checkpoint")
+local InlineDiff = require("zeroxzero.inline_diff")
+local Reconcile = require("zeroxzero.reconcile")
 
 local api = vim.api
 
@@ -37,7 +39,9 @@ end
 ---@field response_started boolean
 ---@field queued_prompts table[]
 ---@field cancel_requested boolean
----@field worktree table|nil
+---@field checkpoint table|nil
+---@field repo_root string|nil
+---@field reconcile zeroxzero.Reconcile|nil
 local Chat = {}
 Chat.__index = Chat
 
@@ -57,12 +61,23 @@ function Chat.new(tab_page_id)
     response_started = false,
     queued_prompts = {},
     cancel_requested = false,
-    worktree = nil,
+    checkpoint = nil,
+    repo_root = nil,
+    reconcile = nil,
+    persist_id = HistoryStore.new_id(),
+    persist_created_at = os.time(),
+    persist_timer = nil,
   }, Chat)
   self.widget = ChatWidget.new(tab_page_id, self.history, function()
     self:submit()
   end, function()
     self:cancel()
+  end, function()
+    return {
+      provider = self.provider_name or config.current.provider,
+      model = self.model,
+      mode = self.mode,
+    }
   end)
   return self
 end
@@ -85,24 +100,59 @@ end
 function Chat:_render()
   vim.schedule(function()
     self.widget:render()
+    self:_schedule_persist()
   end)
 end
 
-function Chat:_add_review_activity()
-  if not self.worktree or not self.worktree:is_valid() then
+function Chat:_schedule_persist()
+  if self.persist_timer then
+    self.persist_timer:stop()
+    self.persist_timer:close()
+  end
+  self.persist_timer = vim.defer_fn(function()
+    self.persist_timer = nil
+    self:_persist_now()
+  end, 1000)
+end
+
+function Chat:_persist_now()
+  HistoryStore.save({
+    id = self.persist_id,
+    created_at = self.persist_created_at,
+    messages = self.history.messages,
+    settings = {
+      provider = self.provider_name,
+      model = self.model,
+      mode = self.mode,
+    },
+  })
+end
+
+---@param id string
+function Chat:load_thread(id)
+  local entry = HistoryStore.load(id)
+  if not entry then
+    vim.notify("0x0: chat history entry not found", vim.log.levels.WARN)
     return
   end
-  local files = self.worktree:changed_files()
-  if #files == 0 then
-    return
+  self:_reset_session()
+  self.history:clear()
+  self.history.messages = entry.messages or {}
+  for _, msg in ipairs(self.history.messages) do
+    if msg.type == "user" and msg.id then
+      self.history.next_id = math.max(self.history.next_id, (tonumber(msg.id) or 0) + 1)
+    end
   end
-  local text = ("Pending review: %d changed file%s"):format(#files, #files == 1 and "" or "s")
-  local last = self.history.messages[#self.history.messages]
-  if last and last.type == "activity" and last.text == text then
-    return
+  self.persist_id = entry.id
+  self.persist_created_at = entry.created_at or os.time()
+  if entry.settings then
+    self.provider_name = entry.settings.provider or self.provider_name
+    self.model = entry.settings.model
+    self.mode = entry.settings.mode
   end
-  self.history:add_activity(text, "pending")
-  self:_render()
+  self.widget:reset()
+  self:open()
+  self.widget:render()
 end
 
 ---@return integer
@@ -206,6 +256,11 @@ function Chat:_handle_update(update)
     end
     local patch = tool_patch(update)
     self.history:update_tool_call(update.toolCallId, patch)
+    if update.status == "completed" and self.checkpoint then
+      vim.schedule(function()
+        InlineDiff.refresh_all(self.checkpoint)
+      end)
+    end
     self:_render()
   elseif kind == "config_option_update" then
     self:_set_config_options(update.configOptions)
@@ -241,6 +296,76 @@ function Chat:_handle_permission(request, respond)
       self.widget:render()
       respond(option_id)
     end)
+  end)
+end
+
+---Resolve an ACP-supplied path to an absolute filesystem path. ACP paths are
+---meant to be absolute, but be defensive: relative paths are joined onto the
+---repo root so we never read/write something outside the project.
+---@param path string
+---@return string|nil
+function Chat:_resolve_acp_path(path)
+  if type(path) ~= "string" or path == "" then
+    return nil
+  end
+  if path:sub(1, 1) == "/" then
+    return path
+  end
+  if self.repo_root then
+    return self.repo_root .. "/" .. path
+  end
+  return nil
+end
+
+function Chat:_handle_fs_read(params, respond)
+  vim.schedule(function()
+    if not self.reconcile then
+      respond(nil, { code = -32000, message = "no active reconcile session" })
+      return
+    end
+    local abs = self:_resolve_acp_path(params.path)
+    if not abs then
+      respond(nil, { code = -32602, message = "invalid path" })
+      return
+    end
+    local content, err = self.reconcile:read_for_agent(abs, params.line, params.limit)
+    if err then
+      respond(nil, { code = -32000, message = err })
+      return
+    end
+    respond(content, nil)
+  end)
+end
+
+function Chat:_handle_fs_write(params, respond)
+  vim.schedule(function()
+    if not self.reconcile then
+      respond({ code = -32000, message = "no active reconcile session" })
+      return
+    end
+    local abs = self:_resolve_acp_path(params.path)
+    if not abs then
+      respond({ code = -32602, message = "invalid path" })
+      return
+    end
+    local ok, werr = self.reconcile:write_for_agent(abs, params.content or "")
+    if not ok then
+      respond({ code = -32000, message = werr or "write rejected" })
+      return
+    end
+    if self.repo_root and Checkpoint.is_ignored(self.repo_root, abs) then
+      local rel = vim.fn.fnamemodify(abs, ":~:.")
+      self.history:add({
+        type = "activity",
+        status = "failed",
+        text = ("wrote `%s` — outside checkpoint, no rewind available"):format(rel),
+      })
+      self:_render()
+    end
+    if self.checkpoint then
+      InlineDiff.refresh_path(self.checkpoint, abs)
+    end
+    respond(nil)
   end)
 end
 
@@ -361,36 +486,43 @@ function Chat:_ensure_client(on_ready)
     self.client:stop()
   end
   self.provider_name = provider_name
-  self.client = acp_client.new(provider)
+  self.client = acp_client.new(provider, { host_fs = true })
   self.client:start(function(c, err)
     on_ready(c, err)
   end)
 end
 
-function Chat:_ensure_worktree(on_ready)
-  if self.worktree then
-    if self.worktree:is_valid() then
-      on_ready(self.worktree, nil)
-      return
-    end
-    DiffPreview.clear_worktree(self.worktree)
-    self.worktree = nil
-  end
-  local worktree, err = ShadowWorktree.create(vim.fn.getcwd())
-  if not worktree then
-    on_ready(nil, { message = err or "failed to create chat worktree" })
+---Take a fresh checkpoint snapshot at the start of every turn so the diff
+---baseline always reflects the working tree as the user just submitted it.
+---@param on_ready fun(checkpoint: table|nil, err: table|nil)
+function Chat:_ensure_checkpoint(on_ready)
+  local root = self.repo_root or Checkpoint.git_root(vim.fn.getcwd())
+  if not root then
+    on_ready(nil, {
+      message = "0x0: not in a git repository — run `git init` first.\n"
+        .. "Inline diff requires a git tree as the rewind / review baseline.",
+    })
     return
   end
-  self.worktree = worktree
-  on_ready(worktree, nil)
+  self.repo_root = root
+  local cp, err = Checkpoint.snapshot(root)
+  if not cp then
+    on_ready(nil, { message = err or "checkpoint snapshot failed" })
+    return
+  end
+  self.checkpoint = cp
+  if self.reconcile then
+    self.reconcile:set_checkpoint(cp)
+    self.reconcile:set_mode(config.current.reconcile or "strict")
+  else
+    self.reconcile = Reconcile.new({ checkpoint = cp, mode = config.current.reconcile or "strict" })
+  end
+  InlineDiff.set_active(cp)
+  on_ready(cp, nil)
 end
 
 function Chat:_ensure_session(on_session)
-  self:_ensure_worktree(function(worktree, werr)
-    if werr or not worktree then
-      on_session(nil, nil, werr or { message = "worktree unavailable" })
-      return
-    end
+  local function start_session(cwd)
     self:_ensure_client(function(client, cerr)
       if cerr or not client then
         on_session(nil, nil, cerr or { message = "client unavailable" })
@@ -401,7 +533,7 @@ function Chat:_ensure_session(on_session)
         return
       end
       local desired = { mode = self.mode, model = self.model }
-      client:new_session(worktree.cwd, function(result, err)
+      client:new_session(cwd, function(result, err)
         if self.client ~= client then
           on_session(nil, nil, { message = "client replaced" })
           return
@@ -420,17 +552,54 @@ function Chat:_ensure_session(on_session)
           on_request_permission = function(request, respond)
             self:_handle_permission(request, respond)
           end,
+          on_fs_read_text_file = function(params, respond)
+            self:_handle_fs_read(params, respond)
+          end,
+          on_fs_write_text_file = function(params, respond)
+            self:_handle_fs_write(params, respond)
+          end,
         })
         self:_apply_initial_session_config(desired, function()
           on_session(client, result.sessionId, nil)
         end)
       end)
     end)
+  end
+
+  self:_ensure_checkpoint(function(checkpoint, cerr)
+    if cerr or not checkpoint then
+      on_session(nil, nil, cerr or { message = "checkpoint unavailable" })
+      return
+    end
+    start_session(checkpoint.root)
   end)
 end
 
 function Chat:open()
   self.widget:open()
+end
+
+---@param sel { path: string|nil, filetype: string|nil, start_line: integer, end_line: integer, lines: string[] }
+function Chat:add_selection(sel)
+  if not sel or not sel.lines or #sel.lines == 0 then
+    return
+  end
+  local fence = sel.filetype and sel.filetype ~= "" and sel.filetype or ""
+  local header
+  if sel.path and sel.path ~= "" then
+    header = ("%s:%d-%d"):format(sel.path, sel.start_line, sel.end_line)
+  else
+    header = ("lines %d-%d"):format(sel.start_line, sel.end_line)
+  end
+  local block = { header, "```" .. fence }
+  for _, line in ipairs(sel.lines) do
+    block[#block + 1] = line
+  end
+  block[#block + 1] = "```"
+  block[#block + 1] = ""
+  self.widget:prepend_input(block)
+  self:open()
+  self.widget:focus_input()
 end
 
 function Chat:close()
@@ -446,10 +615,52 @@ function Chat:toggle()
 end
 
 function Chat:new_session()
+  self:_persist_now()
   self:_reset_session()
   self.history:clear()
   self.widget:reset()
+  self.persist_id = HistoryStore.new_id()
+  self.persist_created_at = os.time()
   self:open()
+end
+
+local SLASH_COMMANDS = {
+  clear = "new_session",
+  new = "new_session",
+  changes = "show_changes",
+  accept = "accept_all",
+  discard = "discard_all",
+  stop = "stop",
+  cancel = "cancel",
+}
+
+local SLASH_HELP = [[Slash commands:
+  /clear   start a new session
+  /changes list files changed since checkpoint
+  /accept  accept all pending changes
+  /discard discard all pending changes
+  /cancel  cancel the in-flight turn
+  /stop    reset the session]]
+
+---@param prompt string
+---@return boolean handled
+function Chat:_dispatch_slash(prompt)
+  local cmd = prompt:match("^/([%w_-]+)%s*$")
+  if not cmd then
+    return false
+  end
+  if cmd == "help" then
+    vim.notify(SLASH_HELP, vim.log.levels.INFO)
+    self.widget:clear_input()
+    return true
+  end
+  local method = SLASH_COMMANDS[cmd]
+  if not method then
+    return false
+  end
+  self.widget:clear_input()
+  self[method](self)
+  return true
 end
 
 function Chat:submit()
@@ -458,6 +669,10 @@ function Chat:submit()
     vim.notify("acp: empty prompt", vim.log.levels.WARN)
     return
   end
+  if self:_dispatch_slash(prompt) then
+    return
+  end
+  self.widget:push_history(prompt)
   if self.in_flight then
     local id = self.history:add_user(prompt, "queued")
     table.insert(self.queued_prompts, { id = id, text = prompt })
@@ -496,51 +711,43 @@ function Chat:_submit_prompt(prompt, user_id, retried_session)
       return
     end
     self:_set_turn_activity("waiting", "Waiting for model")
-    client:prompt(
-      session_id,
-      ReferenceMentions.to_prompt_blocks(prompt, self.worktree and self.worktree.cwd),
-      function(result, err)
-        vim.schedule(function()
-          if self.client ~= client or self.session_id ~= session_id then
-            return
-          end
-          local was_cancelled = self.cancel_requested or is_cancel_result(result)
-          if err and is_session_missing(err) and not retried_session then
-            self.client = nil
-            self.session_id = nil
-            self:_set_turn_activity("waiting", "Restarting session")
-            self.widget:render()
-            self:_submit_prompt(prompt, user_id, true)
-            return
-          end
-          if err and not (was_cancelled and is_transport_disconnected(err)) then
-            local m = error_message(err)
-            self.history:add_agent_chunk("agent", "\n_error: " .. m .. "_")
-          elseif
-            result
-            and result.stopReason
-            and result.stopReason ~= "end_turn"
-            and result.stopReason ~= "cancelled"
-          then
-            self.history:add_agent_chunk("agent", "\n_stopped: " .. tostring(result.stopReason) .. "_")
-          end
-          if err and is_transport_disconnected(err) then
-            self.client = nil
-            self.session_id = nil
-          end
-          self:_set_activity(nil)
+    client:prompt(session_id, ReferenceMentions.to_prompt_blocks(prompt, self:_session_cwd()), function(result, err)
+      vim.schedule(function()
+        if self.client ~= client or self.session_id ~= session_id then
+          return
+        end
+        local was_cancelled = self.cancel_requested or is_cancel_result(result)
+        if err and is_session_missing(err) and not retried_session then
+          self.client = nil
+          self.session_id = nil
+          self:_set_turn_activity("waiting", "Restarting session")
           self.widget:render()
-          self.in_flight = false
-          self.response_started = false
-          self.cancel_requested = false
-          if self.worktree and self:_queued_count() == 0 then
-            self:_add_review_activity()
-            self:_show_worktree(false)
-          end
-          self:_notify_or_continue()
-        end)
-      end
-    )
+          self:_submit_prompt(prompt, user_id, true)
+          return
+        end
+        if err and not (was_cancelled and is_transport_disconnected(err)) then
+          local m = error_message(err)
+          self.history:add_agent_chunk("agent", "\n_error: " .. m .. "_")
+        elseif
+          result
+          and result.stopReason
+          and result.stopReason ~= "end_turn"
+          and result.stopReason ~= "cancelled"
+        then
+          self.history:add_agent_chunk("agent", "\n_stopped: " .. tostring(result.stopReason) .. "_")
+        end
+        if err and is_transport_disconnected(err) then
+          self.client = nil
+          self.session_id = nil
+        end
+        self:_set_activity(nil)
+        self.widget:render()
+        self.in_flight = false
+        self.response_started = false
+        self.cancel_requested = false
+        self:_notify_or_continue()
+      end)
+    end)
   end)
 end
 
@@ -561,18 +768,24 @@ function Chat:cancel()
   end
 end
 
-function Chat:_clear_worktree(discard)
-  local worktree = self.worktree
-  self.worktree = nil
-  DiffPreview.clear_worktree(worktree)
-  if discard and worktree then
-    worktree:discard()
-  end
+---@return string|nil
+function Chat:_session_cwd()
+  return self.repo_root
 end
 
----@param opts? { discard_worktree?: boolean }
-function Chat:_reset_session(opts)
-  opts = opts or {}
+function Chat:_clear_checkpoint()
+  InlineDiff.set_active(nil)
+  if self.reconcile then
+    self.reconcile:set_checkpoint(nil)
+  end
+  if not self.checkpoint then
+    return
+  end
+  Checkpoint.delete_ref(self.checkpoint)
+  self.checkpoint = nil
+end
+
+function Chat:_reset_session()
   self.widget:unbind_permission_keys()
   if self.client and self.session_id then
     self.client:cancel(self.session_id)
@@ -589,57 +802,62 @@ function Chat:_reset_session(opts)
   self.queued_prompts = {}
   self:_set_activity(nil)
   self.config_options = {}
-  if opts.discard_worktree ~= false then
-    self:_clear_worktree(true)
-  end
-end
-
-function Chat:_show_worktree(focus)
-  if self.worktree and not self.worktree:is_valid() then
-    DiffPreview.clear_worktree(self.worktree)
-    self.worktree = nil
-  end
-  DiffPreview.show_worktree(self.worktree, {
-    focus = focus,
-    on_accept_all = function()
-      return self:accept_all()
-    end,
-    on_discard_all = function()
-      return self:discard_all()
-    end,
-  })
-end
-
-function Chat:show_diff()
-  self:_show_worktree(true)
+  self:_clear_checkpoint()
 end
 
 function Chat:accept_all()
-  if not self.worktree then
-    vim.notify("0x0: no chat review worktree", vim.log.levels.INFO)
+  if not self.checkpoint then
+    vim.notify("0x0: no checkpoint to accept against", vim.log.levels.INFO)
     return
   end
-  local ok, err = self.worktree:accept_all()
-  if not ok then
-    vim.notify("0x0: " .. err, vim.log.levels.ERROR)
+  local files = Checkpoint.changed_files(self.checkpoint)
+  if #files == 0 then
+    vim.notify("0x0: no pending changes", vim.log.levels.INFO)
     return
   end
-  self:_clear_worktree(true)
-  self:_reset_session({ discard_worktree = false })
-  vim.cmd.checktime()
-  DiffPreview.render_message("Accepted all chat changes.")
+  self:_clear_checkpoint()
+  vim.notify(("0x0: accepted %d file%s"):format(#files, #files == 1 and "" or "s"), vim.log.levels.INFO)
   return true
 end
 
 function Chat:discard_all()
-  if not self.worktree then
-    vim.notify("0x0: no chat review worktree", vim.log.levels.INFO)
+  if not self.checkpoint then
+    vim.notify("0x0: no checkpoint to discard against", vim.log.levels.INFO)
     return
   end
-  self:_clear_worktree(true)
-  self:_reset_session({ discard_worktree = false })
-  DiffPreview.render_message("Discarded all chat changes.")
+  local ok, err = Checkpoint.restore_all(self.checkpoint)
+  if not ok then
+    vim.notify("0x0: " .. (err or "discard failed"), vim.log.levels.ERROR)
+    return
+  end
+  self:_clear_checkpoint()
+  vim.cmd.checktime()
+  vim.notify("0x0: discarded chat changes", vim.log.levels.INFO)
   return true
+end
+
+function Chat:show_changes()
+  if not self.checkpoint then
+    vim.notify("0x0: no active checkpoint", vim.log.levels.INFO)
+    return
+  end
+  local files = Checkpoint.changed_files(self.checkpoint)
+  if #files == 0 then
+    vim.notify("0x0: no changes since checkpoint", vim.log.levels.INFO)
+    return
+  end
+  vim.ui.select(files, {
+    prompt = ("0x0: %d changed file%s"):format(#files, #files == 1 and "" or "s"),
+    format_item = function(p)
+      return p
+    end,
+  }, function(choice)
+    if not choice then
+      return
+    end
+    local abs = self.checkpoint.root .. "/" .. choice
+    vim.cmd("edit " .. vim.fn.fnameescape(abs))
+  end)
 end
 
 function Chat:stop()
@@ -755,7 +973,14 @@ api.nvim_create_autocmd("TabClosed", {
     end
     local chat = instances[tab]
     if chat then
+      pcall(function()
+        chat:_persist_now()
+      end)
+      local root = chat.repo_root
       chat:stop()
+      if root then
+        pcall(Checkpoint.gc, root, config.current.checkpoint_keep_n or 20)
+      end
       instances[tab] = nil
     end
   end,
@@ -775,6 +1000,31 @@ function M.toggle()
   for_current_tab():toggle()
 end
 
+---@param sel table
+function M.add_selection(sel)
+  for_current_tab():add_selection(sel)
+end
+
+function M.history_picker()
+  local entries = HistoryStore.list()
+  if #entries == 0 then
+    vim.notify("0x0: no saved chat history", vim.log.levels.INFO)
+    return
+  end
+  vim.ui.select(entries, {
+    prompt = "0x0 chat history",
+    format_item = function(e)
+      local when = os.date("%Y-%m-%d %H:%M", e.updated_at)
+      return ("%s  %s  (%d msgs)"):format(when, e.title, e.message_count)
+    end,
+  }, function(choice)
+    if not choice then
+      return
+    end
+    for_current_tab():load_thread(choice.id)
+  end)
+end
+
 function M.new()
   for_current_tab():new_session()
 end
@@ -787,8 +1037,8 @@ function M.cancel()
   for_current_tab():cancel()
 end
 
-function M.diff()
-  for_current_tab():show_diff()
+function M.changes()
+  for_current_tab():show_changes()
 end
 
 function M.accept_all()

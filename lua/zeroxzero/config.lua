@@ -20,6 +20,8 @@ M.defaults = {
   width = 0.4,
   input_height = 8,
   sound = vim.fn.has("mac") == 1 and "/System/Library/Sounds/Blow.aiff" or false,
+  checkpoint_keep_n = 20,
+  reconcile = "strict",
   providers = {
     ["claude-acp"] = {
       name = "Claude ACP",
