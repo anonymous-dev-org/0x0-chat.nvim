@@ -269,34 +269,29 @@ function ChatWidget:_ensure_input_buf()
     end
     return "@"
   end, vim.tbl_extend("force", opts, { desc = "0x0 chat file mention", expr = true }))
+  local function feed(keys)
+    vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes(keys, true, false, true), "n", false)
+  end
   vim.keymap.set("i", "<C-n>", function()
-    if file_completion.select_next(1) then
-      return ""
-    end
-    return ""
-  end, vim.tbl_extend("force", opts, { desc = "0x0 chat next file mention", expr = true }))
+    file_completion.select_next(1)
+  end, vim.tbl_extend("force", opts, { desc = "0x0 chat next file mention" }))
   vim.keymap.set("i", "<C-p>", function()
-    if file_completion.select_next(-1) then
-      return ""
-    end
-    return ""
-  end, vim.tbl_extend("force", opts, { desc = "0x0 chat previous file mention", expr = true }))
+    file_completion.select_next(-1)
+  end, vim.tbl_extend("force", opts, { desc = "0x0 chat previous file mention" }))
   vim.keymap.set("i", "<Tab>", function()
-    if file_completion.accept() then
-      return ""
+    if not file_completion.accept() then
+      feed("<Tab>")
     end
-    return vim.api.nvim_replace_termcodes("<Tab>", true, false, true)
-  end, vim.tbl_extend("force", opts, { desc = "0x0 chat accept file mention", expr = true }))
+  end, vim.tbl_extend("force", opts, { desc = "0x0 chat accept file mention" }))
   vim.keymap.set("i", "<CR>", function()
-    if file_completion.accept() then
-      return ""
+    if not file_completion.accept() then
+      feed("<CR>")
     end
-    return vim.api.nvim_replace_termcodes("<CR>", true, false, true)
-  end, vim.tbl_extend("force", opts, { desc = "0x0 chat accept file mention", expr = true }))
+  end, vim.tbl_extend("force", opts, { desc = "0x0 chat accept file mention" }))
   vim.keymap.set("i", "<Esc>", function()
     file_completion.close()
-    return vim.api.nvim_replace_termcodes("<Esc>", true, false, true)
-  end, vim.tbl_extend("force", opts, { desc = "0x0 chat close file mention", expr = true }))
+    feed("<Esc>")
+  end, vim.tbl_extend("force", opts, { desc = "0x0 chat close file mention" }))
   vim.keymap.set("n", "<C-p>", function()
     self:nav_history(-1)
   end, vim.tbl_extend("force", opts, { desc = "0x0 chat previous prompt" }))
