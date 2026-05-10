@@ -421,6 +421,7 @@ function ChatWidget:_ensure_activity_timer()
       end
       self.activity_frame = (self.activity_frame % #ACTIVITY_SPINNER) + 1
       self:_render_activity()
+      self:_update_input_winbar()
     end)
   )
   pcall(function()
@@ -468,6 +469,7 @@ function ChatWidget:set_activity(state, label)
   end
   self:_render_activity()
   self:_update_winbar()
+  self:_update_input_winbar()
 end
 
 function ChatWidget:_update_winbar()
@@ -485,23 +487,38 @@ function ChatWidget:_update_winbar()
   if info.mode then
     segments[#segments + 1] = "%#ZeroChatHeaderMode#" .. info.mode .. "%*"
   end
-  local state_hl = STATE_HL[self.activity_state or ""] or "ZeroChatHeaderStateIdle"
-  local state_label = self.activity_label or self.activity_state or "idle"
-  segments[#segments + 1] = "%=%#" .. state_hl .. "#" .. state_label .. "%*"
   vim.wo[self.transcript_win].winbar = table.concat(segments, " │ ")
+end
+
+function ChatWidget:_activity_winbar_segment()
+  if not self.activity_state then
+    return nil
+  end
+  local spinner = ACTIVITY_SPINNER[self.activity_frame] or ACTIVITY_SPINNER[1]
+  local label = self.activity_label or ACTIVITY_LABELS[self.activity_state] or "Working"
+  local hl = STATE_HL[self.activity_state] or "Comment"
+  return "%#" .. hl .. "#" .. spinner .. " " .. label .. "%*"
 end
 
 function ChatWidget:_update_input_winbar()
   if not win_valid(self.input_win) then
     return
   end
+  local segments = { "%#ZeroChatHeader# 0x0 chat %*" }
   if not config.current.show_input_hints then
-    vim.wo[self.input_win].winbar = "%#ZeroChatHintLabel# 0x0 prompt%*"
+    local activity = self:_activity_winbar_segment()
+    if activity then
+      segments[#segments + 1] = "%=" .. activity
+    end
+    vim.wo[self.input_win].winbar = table.concat(segments, " ")
     return
   end
-  local segments = {}
   for _, hint in ipairs(INPUT_HINTS) do
     segments[#segments + 1] = "%#ZeroChatHintKey#" .. hint[1] .. "%* %#ZeroChatHintLabel#" .. hint[2] .. "%*"
+  end
+  local activity = self:_activity_winbar_segment()
+  if activity then
+    segments[#segments + 1] = "%=" .. activity
   end
   vim.wo[self.input_win].winbar = " " .. table.concat(segments, "  ")
 end
