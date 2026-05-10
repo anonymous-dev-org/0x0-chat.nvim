@@ -30,8 +30,8 @@ local PERMISSION_DECIDED_HL = "Comment"
 
 local ACTIVITY_SPINNER = { "⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏" }
 local ACTIVITY_LABELS = {
-  waiting = "Waiting for model",
-  responding = "Model responding",
+  waiting = "Working",
+  responding = "Working",
 }
 
 local PERMISSION_HINT_INLINE = "  — [a] allow once  [A] allow always  [r] reject once  [R] reject always"

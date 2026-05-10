@@ -121,6 +121,49 @@ describe("acp_client", function()
     end)
   end)
 
+  it("pauses the provider idle watchdog while permission is pending", function()
+    config.current.request_timeout_ms = 50
+    config.current.initialize_retries = 1
+    with_fake_transport(function(state)
+      local M = reload_client()
+      local client = M.new({ name = "fake", command = "echo" })
+      client:start()
+      ack_initialize(state)
+
+      local permission_respond
+      client:subscribe("sess-1", {
+        on_update = function() end,
+        on_request_permission = function(_, respond)
+          permission_respond = respond
+        end,
+      })
+      client:prompt("sess-1", { { type = "text", text = "hi" } }, function() end)
+      assert.is_true(state.idle_armed)
+
+      state.callbacks.on_message({
+        jsonrpc = "2.0",
+        id = 99,
+        method = "session/request_permission",
+        params = {
+          sessionId = "sess-1",
+          toolCall = { toolCallId = "tool-1", kind = "edit" },
+          options = { { kind = "allow_once", optionId = "allow-1" } },
+        },
+      })
+      vim.wait(50, function()
+        return permission_respond ~= nil
+      end)
+      assert.is_function(permission_respond)
+      assert.is_false(state.idle_armed)
+
+      permission_respond("allow-1")
+      local response = decode_last(state)
+      assert.are.equal(99, response.id)
+      assert.are.same({ outcome = { outcome = "selected", optionId = "allow-1" } }, response.result)
+      assert.is_true(state.idle_armed)
+    end)
+  end)
+
   it("clears the timeout when the response arrives in time", function()
     config.current.request_timeout_ms = 200
     config.current.initialize_retries = 1

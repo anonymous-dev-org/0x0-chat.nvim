@@ -16,7 +16,7 @@ function M:_handle_update(update)
     if text == "" then
       return
     end
-    self:_mark_responding(kind == "agent_thought_chunk" and "Model thinking" or "Model responding")
+    self:_mark_responding("Working")
     local msg_kind = kind == "agent_thought_chunk" and "thought" or "agent"
     self.history:add_agent_chunk(msg_kind, text)
     self:_render()
@@ -25,7 +25,7 @@ function M:_handle_update(update)
       return
     end
     if self.in_flight then
-      self:_set_turn_activity("waiting", "Running tool")
+      self:_set_turn_activity("waiting", "Working")
     end
     self.history:add({
       type = "tool_call",
@@ -41,9 +41,9 @@ function M:_handle_update(update)
     end
     if self.in_flight then
       if update.status == "completed" or update.status == "failed" then
-        self:_set_turn_activity("waiting", "Waiting for model")
+        self:_set_turn_activity("waiting", "Working")
       else
-        self:_set_turn_activity("waiting", "Running tool")
+        self:_set_turn_activity("waiting", "Working")
       end
     end
     local patch = util.tool_patch(update)
@@ -159,7 +159,7 @@ function M:_submit_prompt(prompt, user_id, retried_session)
   self.cancel_requested = false
   self.history:set_user_status(user_id, "active")
   self.widget:clear_input()
-  self:_set_turn_activity("waiting", "Starting session")
+  self:_set_turn_activity("waiting", "Working")
   self.widget:render()
 
   self:_ensure_session(function(client, session_id, sess_err)
@@ -175,7 +175,7 @@ function M:_submit_prompt(prompt, user_id, retried_session)
       end)
       return
     end
-    self:_set_turn_activity("waiting", "Waiting for model")
+    self:_set_turn_activity("waiting", "Working")
     client:prompt(session_id, ReferenceMentions.to_prompt_blocks(prompt, self:_session_cwd()), function(result, err)
       vim.schedule(function()
         if self.client ~= client or self.session_id ~= session_id then

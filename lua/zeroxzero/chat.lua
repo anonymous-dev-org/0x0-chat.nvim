@@ -99,7 +99,7 @@ function Chat:_mark_responding(label)
     return
   end
   self.response_started = true
-  self:_set_turn_activity("responding", label or "Model responding")
+  self:_set_turn_activity("responding", label or "Working")
 end
 
 function Chat:_render()

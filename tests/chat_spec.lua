@@ -113,12 +113,12 @@ describe("chat widget rendering", function()
     local widget = ChatWidget.new(vim.api.nvim_get_current_tabpage(), history, function() end, function() end)
 
     widget:open()
-    widget:set_activity("responding", "Model responding")
+    widget:set_activity("responding", "Working")
 
     local input_winbar = vim.wo[widget.input_win].winbar
     local transcript_winbar = vim.wo[widget.transcript_win].winbar
-    assert.is_nil(input_winbar:find("Model responding", 1, true))
-    assert.is_nil(transcript_winbar:find("Model responding", 1, true))
+    assert.is_nil(input_winbar:find("Working", 1, true))
+    assert.is_nil(transcript_winbar:find("Working", 1, true))
 
     local namespaces = vim.api.nvim_get_namespaces()
     local marks = vim.api.nvim_buf_get_extmarks(widget.transcript_buf, namespaces.zeroxzero_chat_widget, 0, -1, {
@@ -132,7 +132,7 @@ describe("chat widget rendering", function()
       end
     end
     assert.is_truthy(footer)
-    assert.are.equal("Model responding", footer[1][2][1])
+    assert.are.equal("Working", footer[1][2][1])
 
     widget:close()
     vim.cmd("tabclose")

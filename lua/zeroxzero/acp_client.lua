@@ -234,12 +234,21 @@ function Client:start(on_ready)
       self:respond(message_id, { outcome = { outcome = "cancelled" } })
       return
     end
+    if self.transport and self.transport.set_idle_armed then
+      self.transport:set_idle_armed(false)
+    end
     sub.on_request_permission(params, function(option_id)
       if not option_id or option_id == "" then
         self:respond(message_id, { outcome = { outcome = "cancelled" } })
+        if next(self.callbacks) and self.transport and self.transport.set_idle_armed then
+          self.transport:set_idle_armed(true)
+        end
         return
       end
       self:respond(message_id, { outcome = { outcome = "selected", optionId = option_id } })
+      if next(self.callbacks) and self.transport and self.transport.set_idle_armed then
+        self.transport:set_idle_armed(true)
+      end
     end)
   end)
 
