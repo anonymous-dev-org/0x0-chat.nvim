@@ -69,6 +69,7 @@ local INPUT_HINTS = {
 ---@field activity_extmark integer|nil
 ---@field activity_frame integer
 ---@field activity_timer uv_timer_t|nil
+---@field agent_run_open boolean
 local ChatWidget = {}
 ChatWidget.__index = ChatWidget
 
@@ -100,6 +101,7 @@ function ChatWidget.new(tab_page_id, history, on_submit, on_cancel, header_info)
     activity_extmark = nil,
     activity_frame = 1,
     activity_timer = nil,
+    agent_run_open = false,
     prompt_history = {},
     prompt_history_index = 0,
     prompt_history_draft = nil,
@@ -390,6 +392,7 @@ function ChatWidget:reset()
   self.tool_extmarks = {}
   self.user_extmarks = {}
   self.last_kind = nil
+  self.agent_run_open = false
   self:set_activity(nil)
 end
 
@@ -578,8 +581,8 @@ function ChatWidget:_scroll_to_end()
 end
 
 local AGENT_HEADERS = {
-  agent = "## Assistant",
-  thought = "## Thinking",
+  agent = "## Agent",
+  thought = "## Agent",
 }
 
 local function user_header(msg)
@@ -677,9 +680,13 @@ function ChatWidget:render()
         self.user_extmarks[msg.id] = api.nvim_buf_set_extmark(bufnr, NS, start_line + header_index - 1, 0, {})
       end
       self.last_kind = "user"
+      self.agent_run_open = false
     elseif msg.type == "agent" or msg.type == "thought" then
-      if self.last_kind ~= msg.type then
+      if not self.agent_run_open then
         append_lines(bufnr, { "", AGENT_HEADERS[msg.type], "" })
+        self.agent_run_open = true
+      elseif self.last_kind ~= "agent" and self.last_kind ~= "thought" then
+        append_lines(bufnr, { "" })
       end
       append_chunk_text(bufnr, msg.text or "")
       self.last_kind = msg.type

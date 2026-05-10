@@ -70,3 +70,38 @@ describe("chat orchestrator", function()
     assert.is_function(M.diff)
   end)
 end)
+
+describe("chat widget rendering", function()
+  it("uses one Agent heading for a run across tool loops", function()
+    local History = require("zeroxzero.history")
+    local ChatWidget = require("zeroxzero.chat_widget")
+    local history = History.new()
+    vim.cmd("tabnew")
+    local widget = ChatWidget.new(vim.api.nvim_get_current_tabpage(), history, function() end, function() end)
+
+    widget:open()
+    history:add_user("do work")
+    history:add_agent_chunk("agent", "first response")
+    history:add({
+      type = "tool_call",
+      tool_call_id = "tool-1",
+      kind = "edit",
+      title = "change file",
+      status = "completed",
+    })
+    history:add_agent_chunk("agent", "final response")
+    widget:render()
+
+    local lines = vim.api.nvim_buf_get_lines(widget.transcript_buf, 0, -1, false)
+    local agent_headers = 0
+    for _, line in ipairs(lines) do
+      if line == "## Agent" then
+        agent_headers = agent_headers + 1
+      end
+      assert.not_equal("## Assistant", line)
+    end
+    assert.are.equal(1, agent_headers)
+    widget:close()
+    vim.cmd("tabclose")
+  end)
+end)

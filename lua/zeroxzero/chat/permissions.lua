@@ -24,7 +24,7 @@ function M:_handle_permission(request, respond)
       options = request.options or {},
     })
     self.widget:render()
-    util.notify_user("ZeroChatPermission")
+    util.emit_user("ZeroChatPermission")
     self.widget:bind_permission_keys(tool_call_id, request.options or {}, function(option_id, option_name)
       self.history:set_permission_decision(tool_call_id, option_name or option_id or "rejected")
       if self.in_flight then

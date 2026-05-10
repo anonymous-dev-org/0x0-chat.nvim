@@ -95,8 +95,8 @@ function M.generate(provider_name, cwd, first_prompt, callback)
         })
 
         local prompt = table.concat({
-          "Create a concise title for this chat.",
-          "Return only the title, with no quotes and no punctuation.",
+          "Create a concise title for this agent chat.",
+          "Return only the title, with no quotes, labels, or punctuation.",
           "Use 2 to 6 words.",
           "",
           "User request:",

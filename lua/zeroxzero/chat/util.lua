@@ -12,6 +12,11 @@ function M.notify_user(pattern)
   notify.notify(config.current.sound, pattern)
 end
 
+---@param pattern string the autocmd User pattern to fire without sound
+function M.emit_user(pattern)
+  notify.notify(false, pattern)
+end
+
 ---@param err any
 ---@return string
 function M.error_message(err)
