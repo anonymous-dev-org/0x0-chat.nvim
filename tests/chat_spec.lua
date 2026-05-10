@@ -105,7 +105,7 @@ describe("chat widget rendering", function()
     vim.cmd("tabclose")
   end)
 
-  it("shows working state in the input winbar", function()
+  it("shows working state in the transcript footer", function()
     local History = require("zeroxzero.history")
     local ChatWidget = require("zeroxzero.chat_widget")
     local history = History.new()
@@ -117,9 +117,22 @@ describe("chat widget rendering", function()
 
     local input_winbar = vim.wo[widget.input_win].winbar
     local transcript_winbar = vim.wo[widget.transcript_win].winbar
-    assert.is_truthy(input_winbar:find("0x0 chat", 1, true))
-    assert.is_truthy(input_winbar:find("Model responding", 1, true))
+    assert.is_nil(input_winbar:find("Model responding", 1, true))
     assert.is_nil(transcript_winbar:find("Model responding", 1, true))
+
+    local namespaces = vim.api.nvim_get_namespaces()
+    local marks = vim.api.nvim_buf_get_extmarks(widget.transcript_buf, namespaces.zeroxzero_chat_widget, 0, -1, {
+      details = true,
+    })
+    local footer = nil
+    for _, mark in ipairs(marks) do
+      local details = mark[4]
+      if details and details.virt_lines then
+        footer = details.virt_lines
+      end
+    end
+    assert.is_truthy(footer)
+    assert.are.equal("Model responding", footer[1][2][1])
 
     widget:close()
     vim.cmd("tabclose")
