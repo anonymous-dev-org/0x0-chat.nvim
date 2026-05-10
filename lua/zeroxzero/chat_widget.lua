@@ -149,7 +149,6 @@ local function tab_win_for_buf(tab_page_id, bufnr)
 end
 
 local function disable_ambient_completion(bufnr)
-  vim.bo[bufnr].complete = ""
   vim.bo[bufnr].completefunc = ""
   vim.bo[bufnr].omnifunc = ""
   vim.bo[bufnr].tagfunc = ""
@@ -204,10 +203,10 @@ function ChatWidget:_ensure_input_buf()
     vim.schedule(file_completion.trigger)
     return "@"
   end, vim.tbl_extend("force", opts, { desc = "0x0 chat file mention", expr = true }))
-  vim.keymap.set({ "n", "i" }, "<C-p>", function()
+  vim.keymap.set("n", "<C-p>", function()
     self:nav_history(-1)
   end, vim.tbl_extend("force", opts, { desc = "0x0 chat previous prompt" }))
-  vim.keymap.set({ "n", "i" }, "<C-n>", function()
+  vim.keymap.set("n", "<C-n>", function()
     self:nav_history(1)
   end, vim.tbl_extend("force", opts, { desc = "0x0 chat next prompt" }))
 
@@ -493,7 +492,7 @@ function ChatWidget:_update_input_winbar()
     return
   end
   if not config.current.show_input_hints then
-    vim.wo[self.input_win].winbar = "%#ZeroChatHintLabel# 0x0 prompt%*"
+    vim.wo[self.input_win].winbar = ""
     return
   end
   local segments = {}

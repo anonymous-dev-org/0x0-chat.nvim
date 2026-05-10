@@ -137,4 +137,28 @@ describe("chat widget rendering", function()
     widget:close()
     vim.cmd("tabclose")
   end)
+
+  it("keeps the input clean and leaves insert-mode ctrl keys alone", function()
+    local History = require("zeroxzero.history")
+    local ChatWidget = require("zeroxzero.chat_widget")
+    local history = History.new()
+    vim.cmd("tabnew")
+    local widget = ChatWidget.new(vim.api.nvim_get_current_tabpage(), history, function() end, function() end)
+
+    widget:open()
+
+    assert.are.equal("", vim.wo[widget.input_win].winbar)
+    assert.is_nil(vim.fn.maparg("<C-n>", "i", false, true).buffer)
+    assert.is_nil(vim.fn.maparg("<C-p>", "i", false, true).buffer)
+    assert.are.equal(1, vim.fn.maparg("<C-n>", "n", false, true).buffer)
+    assert.are.equal(1, vim.fn.maparg("<C-p>", "n", false, true).buffer)
+    assert.not_equal("", vim.bo[widget.input_buf].complete)
+
+    vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("iabc<C-n>def", true, false, true), "xt", false)
+    local lines = vim.api.nvim_buf_get_lines(widget.input_buf, 0, -1, false)
+    assert.are.equal("abcdef", lines[1])
+
+    widget:close()
+    vim.cmd("tabclose")
+  end)
 end)
