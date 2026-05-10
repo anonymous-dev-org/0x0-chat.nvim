@@ -23,8 +23,54 @@ local ns = api.nvim_create_namespace("zeroxzero_inline_diff")
 -- Per-buffer state: bufnr -> { file = InlineFile, checkpoint = checkpoint }
 local buf_state = {}
 
+-- Per-path set of accepted hunk signatures. The baseline checkpoint blob is
+-- not rewritten on accept, so we filter accepted hunks at refresh time so they
+-- don't reappear after the next tool-completion refresh.
+-- map: rel_path -> { [signature] = true }
+local accepted_signatures = {}
+
 -- Active checkpoint set by the chat module so autocmds can refresh on the fly.
 local active_checkpoint = nil
+
+-- Hooks invoked when the set of attached buffers / hunks changes. Used by the
+-- chat widget to update its pending-diffs winbar segment.
+local change_listeners = {}
+
+local function notify_change()
+  for _, fn in ipairs(change_listeners) do
+    pcall(fn)
+  end
+end
+
+---Register a callback that fires whenever the attached-overlay set changes.
+---@param fn fun()
+function M.on_change(fn)
+  table.insert(change_listeners, fn)
+end
+
+local function hunk_signature(hunk)
+  local new = table.concat(hunk.new_lines or {}, "\n")
+  local old = table.concat(hunk.old_lines or {}, "\n")
+  return ("%d:%d:%s::%s"):format(hunk.new_count or 0, hunk.old_count or 0, new, old)
+end
+
+local function is_accepted(rel, hunk)
+  local set = accepted_signatures[rel]
+  return set and set[hunk_signature(hunk)] == true
+end
+
+local function mark_accepted(rel, hunk)
+  if not rel then
+    return
+  end
+  accepted_signatures[rel] = accepted_signatures[rel] or {}
+  accepted_signatures[rel][hunk_signature(hunk)] = true
+end
+
+---Drop accepted-hunk memory for paths whose checkpoint was cleared.
+local function clear_accepted_signatures()
+  accepted_signatures = {}
+end
 
 local function ensure_highlights()
   local set = vim.api.nvim_set_hl
@@ -95,7 +141,7 @@ local function place_marks(bufnr, file)
   end
   clear_marks(bufnr)
   local line_count = api.nvim_buf_line_count(bufnr)
-  for hi, hunk in ipairs(file.hunks or {}) do
+  for _, hunk in ipairs(file.hunks or {}) do
     -- Render removed lines as virt_lines above the new range.
     if #hunk.old_lines > 0 then
       local anchor = math.max(0, math.min((hunk.new_start or 1) - 1, line_count - 1))
@@ -124,26 +170,29 @@ local function place_marks(bufnr, file)
           })
         end
       end
-      -- Hint at first line of hunk.
-      local hint_line = math.max(0, math.min(hunk.new_start - 1, line_count - 1))
-      pcall(api.nvim_buf_set_extmark, bufnr, ns, hint_line, 0, {
-        virt_text = {
-          {
-            (" [%d/%d] %sa accept · %sr reject · %sm add hunk"):format(
-              hi,
-              #file.hunks,
-              vim.g.maplocalleader or "\\",
-              vim.g.maplocalleader or "\\",
-              vim.g.maplocalleader or "\\"
-            ),
-            "ZeroChatDiffHint",
-          },
-        },
-        virt_text_pos = "eol",
-        hl_mode = "combine",
-      })
     end
   end
+end
+
+---Drop accepted hunks from a parsed file before we attach.
+---@param file zeroxzero.InlineFile
+---@return zeroxzero.InlineFile
+local function filter_accepted(file)
+  if not file or not file.hunks then
+    return file
+  end
+  local set = accepted_signatures[file.path]
+  if not set then
+    return file
+  end
+  local kept = {}
+  for _, hunk in ipairs(file.hunks) do
+    if not set[hunk_signature(hunk)] then
+      kept[#kept + 1] = hunk
+    end
+  end
+  file.hunks = kept
+  return file
 end
 
 local function bind_keymaps(bufnr)
@@ -154,12 +203,24 @@ local function bind_keymaps(bufnr)
   vim.keymap.set("n", "<localleader>r", function()
     M.reject_hunk_at_cursor()
   end, vim.tbl_extend("force", opts, { desc = "0x0: reject hunk" }))
+  vim.keymap.set("n", "<localleader>A", function()
+    M.accept_file()
+  end, vim.tbl_extend("force", opts, { desc = "0x0: accept all hunks in file" }))
+  vim.keymap.set("n", "<localleader>R", function()
+    M.reject_file()
+  end, vim.tbl_extend("force", opts, { desc = "0x0: reject all hunks in file" }))
   vim.keymap.set("n", "]h", function()
     M.next_hunk()
   end, vim.tbl_extend("force", opts, { desc = "0x0: next hunk" }))
   vim.keymap.set("n", "[h", function()
     M.prev_hunk()
   end, vim.tbl_extend("force", opts, { desc = "0x0: prev hunk" }))
+  vim.keymap.set("n", "]H", function()
+    M.next_file_hunk()
+  end, vim.tbl_extend("force", opts, { desc = "0x0: next file with hunks" }))
+  vim.keymap.set("n", "[H", function()
+    M.prev_file_hunk()
+  end, vim.tbl_extend("force", opts, { desc = "0x0: prev file with hunks" }))
   vim.keymap.set("n", "<localleader>m", function()
     require("zeroxzero.chat").add_current_hunk()
   end, vim.tbl_extend("force", opts, { desc = "0x0: add hunk to chat" }))
@@ -169,12 +230,20 @@ local function bind_keymaps(bufnr)
 end
 
 local function unbind_keymaps(bufnr)
-  pcall(vim.keymap.del, "n", "<localleader>a", { buffer = bufnr })
-  pcall(vim.keymap.del, "n", "<localleader>r", { buffer = bufnr })
-  pcall(vim.keymap.del, "n", "]h", { buffer = bufnr })
-  pcall(vim.keymap.del, "n", "[h", { buffer = bufnr })
-  pcall(vim.keymap.del, "n", "<localleader>m", { buffer = bufnr })
-  pcall(vim.keymap.del, "n", "<localleader>f", { buffer = bufnr })
+  for _, key in ipairs({
+    "<localleader>a",
+    "<localleader>r",
+    "<localleader>A",
+    "<localleader>R",
+    "]h",
+    "[h",
+    "]H",
+    "[H",
+    "<localleader>m",
+    "<localleader>f",
+  }) do
+    pcall(vim.keymap.del, "n", key, { buffer = bufnr })
+  end
 end
 
 ---@param bufnr integer
@@ -184,6 +253,9 @@ function M.attach(bufnr, file, checkpoint)
   if not bufnr or not api.nvim_buf_is_valid(bufnr) then
     return
   end
+  if file then
+    file = filter_accepted(file)
+  end
   if not file or not file.hunks or #file.hunks == 0 then
     M.detach(bufnr)
     return
@@ -191,14 +263,20 @@ function M.attach(bufnr, file, checkpoint)
   buf_state[bufnr] = { file = file, checkpoint = checkpoint }
   place_marks(bufnr, file)
   bind_keymaps(bufnr)
+  M._refresh_focused_hunk(bufnr)
+  notify_change()
 end
 
 ---@param bufnr integer
 function M.detach(bufnr)
+  local was_attached = buf_state[bufnr] ~= nil
   buf_state[bufnr] = nil
   if bufnr and api.nvim_buf_is_valid(bufnr) then
     clear_marks(bufnr)
     unbind_keymaps(bufnr)
+  end
+  if was_attached then
+    notify_change()
   end
 end
 
@@ -269,6 +347,8 @@ function M.detach_all()
     M.detach(bufnr)
   end
   buf_state = {}
+  clear_accepted_signatures()
+  notify_change()
 end
 
 ---@param checkpoint table|nil
@@ -293,6 +373,71 @@ api.nvim_create_autocmd({ "BufReadPost", "BufWritePost" }, {
       return
     end
     M.refresh_path(active_checkpoint, path)
+  end,
+})
+
+-- Focused-hunk hint: a single virt_text extmark on whichever hunk the cursor
+-- is over, refreshed on CursorMoved. Avoids the per-hunk hint clutter.
+local hint_ns = api.nvim_create_namespace("zeroxzero_inline_diff_hint")
+
+function M._refresh_focused_hunk(bufnr)
+  bufnr = bufnr or api.nvim_get_current_buf()
+  if not api.nvim_buf_is_valid(bufnr) then
+    return
+  end
+  api.nvim_buf_clear_namespace(bufnr, hint_ns, 0, -1)
+  local state = buf_state[bufnr]
+  if not state or not state.file or #state.file.hunks == 0 then
+    return
+  end
+  local win = api.nvim_get_current_win()
+  if api.nvim_win_get_buf(win) ~= bufnr then
+    return
+  end
+  local cursor = api.nvim_win_get_cursor(win)[1]
+  local idx, hunk
+  for i, h in ipairs(state.file.hunks) do
+    local start = h.new_start
+    local stop = start + math.max(0, h.new_count) - 1
+    if h.new_count == 0 then
+      stop = start
+    end
+    if cursor >= start and cursor <= stop then
+      idx, hunk = i, h
+      break
+    end
+  end
+  if not hunk then
+    return
+  end
+  local line_count = api.nvim_buf_line_count(bufnr)
+  local hint_line = math.max(0, math.min(hunk.new_start - 1, line_count - 1))
+  local lc = vim.g.maplocalleader or "\\"
+  pcall(api.nvim_buf_set_extmark, bufnr, hint_ns, hint_line, 0, {
+    virt_text = {
+      {
+        (" [%d/%d] %sa accept · %sr reject · %sA accept file · %sm attach"):format(
+          idx,
+          #state.file.hunks,
+          lc,
+          lc,
+          lc,
+          lc
+        ),
+        "ZeroChatDiffHint",
+      },
+    },
+    virt_text_pos = "eol",
+    hl_mode = "combine",
+  })
+end
+
+api.nvim_create_autocmd({ "CursorMoved", "BufEnter" }, {
+  group = augroup,
+  callback = function(args)
+    if buf_state[args.buf] then
+      M._refresh_focused_hunk(args.buf)
+    end
   end,
 })
 
@@ -379,17 +524,57 @@ end
 
 function M.accept_hunk_at_cursor()
   local bufnr = api.nvim_get_current_buf()
-  local state, idx = find_hunk_at(bufnr)
+  local state, idx, hunk = find_hunk_at(bufnr)
   if not state or not idx then
     vim.notify("0x0: no hunk under cursor", vim.log.levels.INFO)
     return
   end
+  -- Memoise so the next refresh against the unchanged baseline filters it out.
+  mark_accepted(state.file.path, hunk)
   table.remove(state.file.hunks, idx)
   if #state.file.hunks == 0 then
     M.detach(bufnr)
   else
     place_marks(bufnr, state.file)
+    M._refresh_focused_hunk(bufnr)
+    notify_change()
   end
+end
+
+---Return the line ranges (1-indexed inclusive) where the buffer differs from
+---the on-disk file. Used to scope the reject-dirty check to the hunk.
+local function dirty_ranges(bufnr)
+  local path = api.nvim_buf_get_name(bufnr)
+  if path == "" or vim.fn.filereadable(path) ~= 1 then
+    return nil -- can't compare; fall back to global modified flag
+  end
+  local buf_lines = api.nvim_buf_get_lines(bufnr, 0, -1, false)
+  local disk_lines = vim.fn.readfile(path)
+  if not vim.diff then
+    return nil
+  end
+  local indices = vim.diff(table.concat(disk_lines, "\n"), table.concat(buf_lines, "\n"), {
+    result_type = "indices",
+    algorithm = "histogram",
+  })
+  if not indices then
+    return nil
+  end
+  local out = {}
+  for _, h in ipairs(indices) do
+    -- h = { a_start, a_count, b_start, b_count } in buffer (b) coordinates.
+    local b_start, b_count = h[3], h[4]
+    if b_count == 0 then
+      out[#out + 1] = { b_start, b_start } -- pure deletion, anchor line
+    else
+      out[#out + 1] = { b_start, b_start + b_count - 1 }
+    end
+  end
+  return out
+end
+
+local function range_overlap(a_start, a_end, b_start, b_end)
+  return not (a_end < b_start or b_end < a_start)
 end
 
 function M.reject_hunk_at_cursor()
@@ -400,19 +585,39 @@ function M.reject_hunk_at_cursor()
     return
   end
   if vim.bo[bufnr].modified then
-    vim.notify("0x0: save the buffer before rejecting (it has unsaved edits)", vim.log.levels.WARN)
-    return
+    local hunk_start = hunk.new_start
+    local hunk_end = hunk.new_count > 0 and (hunk.new_start + hunk.new_count - 1) or hunk.new_start
+    local dirty = dirty_ranges(bufnr)
+    local conflicts = false
+    if dirty == nil then
+      conflicts = true
+    else
+      for _, r in ipairs(dirty) do
+        if range_overlap(hunk_start, hunk_end, r[1], r[2]) then
+          conflicts = true
+          break
+        end
+      end
+    end
+    if conflicts then
+      vim.notify("0x0: save (or revert) the dirty edits over this hunk before rejecting", vim.log.levels.WARN)
+      return
+    end
+    -- Persist edits outside the hunk first so our diff baseline stays sane.
+    pcall(function()
+      api.nvim_buf_call(bufnr, function()
+        vim.cmd("silent! write")
+      end)
+    end)
   end
   -- Replace [new_start, new_start+new_count) with hunk.old_lines.
   local s = hunk.new_start - 1
   local e = s + hunk.new_count
   if hunk.new_count == 0 then
-    -- Pure deletion in the new file: insert old lines after `s`.
     s = hunk.new_start
     e = s
   end
   pcall(api.nvim_buf_set_lines, bufnr, s, e, false, hunk.old_lines)
-  -- Persist to disk so the next refresh sees the change.
   pcall(function()
     api.nvim_buf_call(bufnr, function()
       vim.cmd("silent! write")
@@ -421,6 +626,77 @@ function M.reject_hunk_at_cursor()
   if state.checkpoint then
     M.refresh_path(state.checkpoint, state.file.abspath or vim.api.nvim_buf_get_name(bufnr))
   end
+end
+
+---Accept every hunk in the current buffer's overlay.
+function M.accept_file()
+  local bufnr = api.nvim_get_current_buf()
+  local state = buf_state[bufnr]
+  if not state or not state.file or #state.file.hunks == 0 then
+    vim.notify("0x0: no hunks attached to this buffer", vim.log.levels.INFO)
+    return
+  end
+  for _, hunk in ipairs(state.file.hunks) do
+    mark_accepted(state.file.path, hunk)
+  end
+  M.detach(bufnr)
+end
+
+---Reject every hunk in the current buffer's overlay (in reverse line order).
+function M.reject_file()
+  local bufnr = api.nvim_get_current_buf()
+  local state = buf_state[bufnr]
+  if not state or not state.file or #state.file.hunks == 0 then
+    vim.notify("0x0: no hunks attached to this buffer", vim.log.levels.INFO)
+    return
+  end
+  if state.checkpoint then
+    local rel = state.file.path
+    local ok, err = require("zeroxzero.checkpoint").restore_file(state.checkpoint, rel)
+    if not ok then
+      vim.notify("0x0: reject_file failed: " .. (err or "unknown"), vim.log.levels.ERROR)
+      return
+    end
+    pcall(vim.cmd, "checktime " .. bufnr)
+    M.refresh_path(state.checkpoint, state.file.abspath or vim.api.nvim_buf_get_name(bufnr))
+  end
+end
+
+---Jump to the first hunk in the next buffer with attached hunks.
+local function jump_in_attached(direction)
+  local list = M.list_attached()
+  if #list == 0 then
+    return
+  end
+  table.sort(list, function(a, b)
+    return a.path < b.path
+  end)
+  local cur = api.nvim_get_current_buf()
+  local idx
+  for i, e in ipairs(list) do
+    if e.bufnr == cur then
+      idx = i
+      break
+    end
+  end
+  idx = idx or 0
+  local target = list[((idx - 1 + direction) % #list) + 1]
+  if not target then
+    return
+  end
+  vim.cmd("buffer " .. target.bufnr)
+  local state = buf_state[target.bufnr]
+  if state and state.file and state.file.hunks[1] then
+    api.nvim_win_set_cursor(0, { state.file.hunks[1].new_start, 0 })
+  end
+end
+
+function M.next_file_hunk()
+  jump_in_attached(1)
+end
+
+function M.prev_file_hunk()
+  jump_in_attached(-1)
 end
 
 ---Returns a list of currently-attached buffers.

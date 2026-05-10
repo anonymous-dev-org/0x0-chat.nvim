@@ -96,8 +96,36 @@ function M.parse(input, cwd)
   return mentions
 end
 
+local function git_branch(cwd)
+  local out = vim.fn.systemlist({ "git", "-C", cwd or vim.fn.getcwd(), "symbolic-ref", "--quiet", "--short", "HEAD" })
+  if vim.v.shell_error ~= 0 then
+    return nil
+  end
+  return out[1]
+end
+
+local function metadata_block(cwd)
+  cwd = cwd or vim.fn.getcwd()
+  local lines = { "<context>", ("<cwd>%s</cwd>"):format(cwd) }
+  local branch = git_branch(cwd)
+  if branch and branch ~= "" then
+    lines[#lines + 1] = ("<branch>%s</branch>"):format(branch)
+  end
+  -- Best-effort: previously-focused buffer (the last non-chat-input window).
+  local cur_buf = vim.api.nvim_get_current_buf()
+  local ft = vim.bo[cur_buf].filetype
+  if ft ~= "zeroxzero-chat-input" and ft ~= "markdown" then
+    local name = vim.api.nvim_buf_get_name(cur_buf)
+    if name and name ~= "" then
+      lines[#lines + 1] = ("<editing>%s</editing>"):format(vim.fn.fnamemodify(name, ":~:."))
+    end
+  end
+  lines[#lines + 1] = "</context>"
+  return { type = "text", text = table.concat(lines, "\n") }
+end
+
 function M.to_prompt_blocks(input, cwd)
-  local blocks = { { type = "text", text = input } }
+  local blocks = { metadata_block(cwd), { type = "text", text = input } }
 
   for _, mention in ipairs(M.parse(input, cwd)) do
     if mention.type == "file" then

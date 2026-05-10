@@ -33,6 +33,9 @@ function M:_handle_update(update)
       kind = update.kind or "tool",
       title = update.title or "",
       status = update.status or "pending",
+      raw_input = update.rawInput,
+      content = update.content,
+      locations = update.locations,
     })
     self:_render()
   elseif kind == "tool_call_update" then

@@ -194,8 +194,10 @@ describe("inline_diff accept/reject", function()
   end
 
   after_each(function()
+    -- detach_all clears the per-path accepted-signature memo so signatures
+    -- from one test don't filter out hunks attached by the next.
+    InlineDiff.detach_all()
     if bufnr and vim.api.nvim_buf_is_valid(bufnr) then
-      InlineDiff.detach(bufnr)
       vim.api.nvim_buf_delete(bufnr, { force = true })
     end
   end)

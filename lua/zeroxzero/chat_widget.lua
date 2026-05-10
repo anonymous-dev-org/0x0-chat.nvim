@@ -1,6 +1,9 @@
 local config = require("zeroxzero.config")
 local file_completion = require("zeroxzero.file_completion")
+local InlineDiff = require("zeroxzero.inline_diff")
 local Line = require("zeroxzero.line")
+local mention_highlight = require("zeroxzero.mention_highlight")
+local tool_policy = require("zeroxzero.chat.tool_policy")
 
 local api = vim.api
 
@@ -108,6 +111,11 @@ function ChatWidget.new(tab_page_id, history, on_submit, on_cancel, header_info)
   }, ChatWidget)
 end
 
+-- Forward declarations for locals used by ChatWidget methods declared
+-- before their bodies.
+local default_expanded
+local place_status_extmark
+
 local function buf_valid(bufnr)
   return bufnr and api.nvim_buf_is_valid(bufnr)
 end
@@ -168,6 +176,9 @@ function ChatWidget:_ensure_transcript_buf()
   vim.bo[bufnr].filetype = "markdown"
   vim.bo[bufnr].modifiable = false
   pcall(vim.treesitter.start, bufnr, "markdown")
+  vim.keymap.set("n", "<localleader>o", function()
+    self:toggle_tool_expand_at_cursor()
+  end, { buffer = bufnr, nowait = true, silent = true, desc = "0x0 chat toggle tool output" })
   self.transcript_buf = bufnr
   self.rendered_count = 0
   self.tool_extmarks = {}
@@ -175,6 +186,53 @@ function ChatWidget:_ensure_transcript_buf()
   self.last_kind = nil
   self.activity_extmark = nil
   return bufnr
+end
+
+---Find the tool_call history entry whose extmark sits at `row` (0-indexed).
+---@param row integer
+---@return table|nil
+function ChatWidget:_tool_at_row(row)
+  if not buf_valid(self.transcript_buf) then
+    return nil
+  end
+  for _, msg in ipairs(self.history.messages) do
+    if msg.type == "tool_call" and msg.tool_call_id then
+      local mark = self.tool_extmarks[msg.tool_call_id]
+      if mark then
+        local pos = api.nvim_buf_get_extmark_by_id(self.transcript_buf, NS, mark, {})
+        if pos[1] == row then
+          return msg
+        end
+      end
+    end
+  end
+  return nil
+end
+
+function ChatWidget:toggle_tool_expand_at_cursor()
+  local win = self.transcript_win
+  if not win_valid(win) then
+    return
+  end
+  local cursor = api.nvim_win_get_cursor(win)
+  local msg = self:_tool_at_row(cursor[1] - 1)
+  if not msg then
+    return
+  end
+  local current = msg.expanded
+  if current == nil then
+    current = default_expanded(msg)
+  end
+  msg.expanded = not current
+  -- Re-place this extmark with new virt_lines.
+  local mark = self.tool_extmarks[msg.tool_call_id]
+  if mark and buf_valid(self.transcript_buf) then
+    local pos = api.nvim_buf_get_extmark_by_id(self.transcript_buf, NS, mark, {})
+    if pos[1] then
+      api.nvim_buf_del_extmark(self.transcript_buf, NS, mark)
+      self.tool_extmarks[msg.tool_call_id] = place_status_extmark(self.transcript_buf, pos[1], msg)
+    end
+  end
 end
 
 function ChatWidget:_ensure_input_buf()
@@ -200,7 +258,14 @@ function ChatWidget:_ensure_input_buf()
     require("zeroxzero.chat").review()
   end, vim.tbl_extend("force", opts, { desc = "0x0 chat review diff" }))
   vim.keymap.set("i", "@", function()
-    vim.schedule(file_completion.trigger)
+    -- Only auto-trigger when '@' starts a token (after whitespace or SOL),
+    -- so it doesn't fire inside e.g. "user@host".
+    local line = api.nvim_get_current_line()
+    local col = api.nvim_win_get_cursor(0)[2]
+    local prev = col > 0 and line:sub(col, col) or ""
+    if prev == "" or prev:match("%s") then
+      vim.schedule(file_completion.trigger)
+    end
     return "@"
   end, vim.tbl_extend("force", opts, { desc = "0x0 chat file mention", expr = true }))
   vim.keymap.set("n", "<C-p>", function()
@@ -211,6 +276,16 @@ function ChatWidget:_ensure_input_buf()
   end, vim.tbl_extend("force", opts, { desc = "0x0 chat next prompt" }))
 
   self.input_buf = bufnr
+  self.mention_summary = { paths = {}, total = 0 }
+  mention_highlight.attach(bufnr, vim.fn.getcwd(), function(summary)
+    self.mention_summary = summary
+    self:_update_input_winbar()
+  end)
+  InlineDiff.on_change(function()
+    vim.schedule(function()
+      self:_update_winbar()
+    end)
+  end)
   return bufnr
 end
 
@@ -484,6 +559,19 @@ function ChatWidget:_update_winbar()
   if info.mode then
     segments[#segments + 1] = "%#ZeroChatHeaderMode#" .. info.mode .. "%*"
   end
+  local attached = InlineDiff.list_attached()
+  if #attached > 0 then
+    local hunks = 0
+    for _, e in ipairs(attached) do
+      hunks = hunks + (e.hunks or 0)
+    end
+    segments[#segments + 1] = ("%%#ZeroChatHeaderStateWaiting#diffs: %d file%s, %d hunk%s%%*"):format(
+      #attached,
+      #attached == 1 and "" or "s",
+      hunks,
+      hunks == 1 and "" or "s"
+    )
+  end
   vim.wo[self.transcript_win].winbar = table.concat(segments, " │ ")
 end
 
@@ -491,15 +579,32 @@ function ChatWidget:_update_input_winbar()
   if not win_valid(self.input_win) then
     return
   end
-  if not config.current.show_input_hints then
+  local left = ""
+  if config.current.show_input_hints then
+    local segments = {}
+    for _, hint in ipairs(INPUT_HINTS) do
+      segments[#segments + 1] = "%#ZeroChatHintKey#" .. hint[1] .. "%* %#ZeroChatHintLabel#" .. hint[2] .. "%*"
+    end
+    left = " " .. table.concat(segments, "  ")
+  end
+  local summary = self.mention_summary
+  local right = ""
+  if summary and summary.total and summary.total > 0 then
+    local shown = {}
+    for i = 1, math.min(3, #summary.paths) do
+      shown[i] = vim.fn.fnamemodify(summary.paths[i], ":t")
+    end
+    local label = "ctx: " .. table.concat(shown, ", ")
+    if summary.total > #shown then
+      label = label .. (" (+%d)"):format(summary.total - #shown)
+    end
+    right = "%#ZeroChatHintLabel#" .. label .. "%* "
+  end
+  if left == "" and right == "" then
     vim.wo[self.input_win].winbar = ""
     return
   end
-  local segments = {}
-  for _, hint in ipairs(INPUT_HINTS) do
-    segments[#segments + 1] = "%#ZeroChatHintKey#" .. hint[1] .. "%* %#ZeroChatHintLabel#" .. hint[2] .. "%*"
-  end
-  vim.wo[self.input_win].winbar = " " .. table.concat(segments, "  ")
+  vim.wo[self.input_win].winbar = left .. "%=" .. right
 end
 
 local function format_tool_line(tool)
@@ -516,6 +621,48 @@ local function format_tool_line(tool)
   })
 end
 
+---Default expanded state for a tool_call: shell expands, everything else collapses.
+default_expanded = function(tool)
+  return tool_policy.classify(tool) == "shell"
+end
+
+---@param tool table  history tool_call entry
+---@return table[]|nil  list of virt_line chunk arrays
+local function tool_virt_lines(tool)
+  local class = tool_policy.classify(tool)
+  local virt = {}
+
+  local preview = tool_policy.input_preview(class, tool.raw_input)
+  if preview then
+    table.insert(virt, { { "  ", nil }, { preview, "Comment" } })
+  end
+
+  local summary = tool_policy.output_summary(tool.content)
+  if summary then
+    local expanded = tool.expanded
+    if expanded == nil then
+      expanded = default_expanded(tool)
+    end
+    if expanded then
+      local cap = config.current.tool_output_max_lines or 200
+      local n = math.min(#summary.lines, cap)
+      for i = 1, n do
+        table.insert(virt, { { "  │ ", "Comment" }, { summary.lines[i] or "", nil } })
+      end
+      if #summary.lines > cap then
+        table.insert(virt, { { ("  │ … %d more lines"):format(#summary.lines - cap), "Comment" } })
+      end
+    else
+      table.insert(virt, { { "  ", nil }, { summary.summary, "Comment" } })
+    end
+  end
+
+  if #virt == 0 then
+    return nil
+  end
+  return virt
+end
+
 local function format_permission_line(perm)
   local sections = {
     { "> tool request: ", "Comment" },
@@ -529,6 +676,54 @@ local function format_permission_line(perm)
     table.insert(sections, { PERMISSION_HINT_INLINE, "Comment" })
   end
   return Line:new(sections)
+end
+
+---@param perm table  history permission entry
+---@return table[]|nil  list of virt_line chunk arrays
+local function permission_virt_lines(perm)
+  if perm.decision then
+    return nil
+  end
+  local class = perm.tool_class
+  if class ~= "write" and class ~= "shell" then
+    return nil
+  end
+  local raw = perm.raw_input
+  if type(raw) ~= "table" then
+    return nil
+  end
+  local virt = {}
+  if class == "write" then
+    local path = raw.file_path or raw.path or raw.filePath
+    if path then
+      table.insert(virt, { { "  → ", "Comment" }, { vim.fn.fnamemodify(path, ":~:."), "Identifier" } })
+    end
+    local text = raw.content or raw.new_string or raw.newText
+    if type(text) == "string" and text ~= "" then
+      local lines = vim.split(text, "\n", { plain = true })
+      table.insert(virt, { { "  + ", "DiffAdd" }, { lines[1] or "", "DiffAdd" } })
+      if #lines > 2 then
+        table.insert(virt, { { "  ⋮ ", "Comment" }, { ("(%d more)"):format(#lines - 2), "Comment" } })
+      end
+      if #lines > 1 then
+        table.insert(virt, { { "  + ", "DiffAdd" }, { lines[#lines] or "", "DiffAdd" } })
+      end
+    end
+  elseif class == "shell" then
+    local cmd = raw.command or raw.cmd
+    if cmd then
+      for _, line in ipairs(vim.split(tostring(cmd), "\n", { plain = true })) do
+        table.insert(virt, { { "  $ ", "Comment" }, { line, nil } })
+      end
+    end
+    if raw.cwd then
+      table.insert(virt, { { "  in ", "Comment" }, { vim.fn.fnamemodify(raw.cwd, ":~:."), "Comment" } })
+    end
+  end
+  if #virt == 0 then
+    return nil
+  end
+  return virt
 end
 
 local function format_activity_line(activity)
@@ -608,10 +803,14 @@ end
 ---@param row integer
 ---@param msg table
 ---@return integer
-local function place_status_extmark(bufnr, row, msg)
-  return api.nvim_buf_set_extmark(bufnr, NS, row, 0, {
-    line_hl_group = line_hl_for(msg),
-  })
+place_status_extmark = function(bufnr, row, msg)
+  local opts = { line_hl_group = line_hl_for(msg) }
+  if msg.type == "tool_call" then
+    opts.virt_lines = tool_virt_lines(msg)
+  elseif msg.type == "permission" then
+    opts.virt_lines = permission_virt_lines(msg)
+  end
+  return api.nvim_buf_set_extmark(bufnr, NS, row, 0, opts)
 end
 
 function ChatWidget:render()

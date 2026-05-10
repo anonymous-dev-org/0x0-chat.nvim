@@ -14,6 +14,10 @@
 ---@field kind string
 ---@field title string
 ---@field status string
+---@field raw_input? table
+---@field content? table[]
+---@field locations? table[]
+---@field expanded? boolean
 
 ---@class zeroxzero.history.Permission
 ---@field type "permission"
@@ -21,6 +25,9 @@
 ---@field description string
 ---@field options table[]
 ---@field decision? string
+---@field tool_class? "read"|"write"|"shell"|"unknown"
+---@field raw_input? table
+---@field tool_content? table[]
 
 ---@class zeroxzero.history.Activity
 ---@field type "activity"

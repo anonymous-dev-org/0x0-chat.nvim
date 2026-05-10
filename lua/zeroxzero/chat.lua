@@ -161,6 +161,31 @@ function Chat:_add_prompt_block(lines)
   self.widget:focus_input()
 end
 
+---Return true if the chat input already mentions the given path
+---(optionally with the same range).
+---@param rel string repo-relative or display path
+---@param start_line integer|nil
+---@param end_line integer|nil
+function Chat:_input_mentions(rel, start_line, end_line)
+  if not self.widget or not self.widget.input_buf or not api.nvim_buf_is_valid(self.widget.input_buf) then
+    return false
+  end
+  local text = table.concat(api.nvim_buf_get_lines(self.widget.input_buf, 0, -1, false), "\n")
+  local cwd = self.repo_root or vim.fn.getcwd()
+  local mentions = require("zeroxzero.reference_mentions").parse(text, cwd)
+  for _, m in ipairs(mentions) do
+    if m.path == rel or m.absolute_path == rel then
+      if not start_line then
+        return true
+      end
+      if m.start_line == start_line and m.end_line == end_line then
+        return true
+      end
+    end
+  end
+  return false
+end
+
 function Chat:add_current_file()
   local path = api.nvim_buf_get_name(0)
   if path == "" then
@@ -171,6 +196,10 @@ function Chat:add_current_file()
   local rel = vim.fn.fnamemodify(path, ":~:.")
   if root and path:sub(1, #root + 1) == root .. "/" then
     rel = path:sub(#root + 2)
+  end
+  if self:_input_mentions(rel) then
+    vim.notify("0x0: " .. rel .. " is already attached", vim.log.levels.INFO)
+    return
   end
   self:_add_prompt_block({ "@" .. rel, "" })
 end
@@ -189,6 +218,47 @@ function Chat:add_current_hunk()
   block[#block + 1] = "```"
   block[#block + 1] = ""
   self:_add_prompt_block(block)
+end
+
+---Pull the most recent visual selection from the previously-focused
+---non-chat window and prepend a `@path#L<a>-L<b>` mention.
+function Chat:add_visual_selection_from_prev()
+  -- Find a window in this tabpage whose buffer is not the chat input/transcript.
+  local target_win
+  for _, win in ipairs(api.nvim_tabpage_list_wins(self.tab_page_id)) do
+    local buf = api.nvim_win_get_buf(win)
+    if buf ~= self.widget.input_buf and buf ~= self.widget.transcript_buf then
+      target_win = win
+      break
+    end
+  end
+  if not target_win then
+    vim.notify("0x0: no source window to pull a selection from", vim.log.levels.INFO)
+    return
+  end
+  local buf = api.nvim_win_get_buf(target_win)
+  local path = api.nvim_buf_get_name(buf)
+  if path == "" then
+    vim.notify("0x0: source buffer has no file path", vim.log.levels.INFO)
+    return
+  end
+  local s = api.nvim_buf_get_mark(buf, "<")
+  local e = api.nvim_buf_get_mark(buf, ">")
+  if not s or s[1] == 0 or not e or e[1] == 0 then
+    vim.notify("0x0: no recent visual selection in source buffer", vim.log.levels.INFO)
+    return
+  end
+  local sl, el = math.min(s[1], e[1]), math.max(s[1], e[1])
+  local root = self.repo_root or Checkpoint.git_root(vim.fn.getcwd())
+  local rel = vim.fn.fnamemodify(path, ":~:.")
+  if root and path:sub(1, #root + 1) == root .. "/" then
+    rel = path:sub(#root + 2)
+  end
+  if self:_input_mentions(rel, sl, el) then
+    vim.notify(("0x0: %s#L%d-L%d already attached"):format(rel, sl, el), vim.log.levels.INFO)
+    return
+  end
+  self:_add_prompt_block({ ("@%s#L%d-L%d"):format(rel, sl, el), "" })
 end
 
 function Chat:close()
@@ -307,6 +377,10 @@ end
 
 function M.add_current_hunk()
   for_current_tab():add_current_hunk()
+end
+
+function M.add_visual_selection_from_prev()
+  for_current_tab():add_visual_selection_from_prev()
 end
 
 ---@param tool_call_id? string

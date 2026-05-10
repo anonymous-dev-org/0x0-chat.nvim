@@ -63,6 +63,15 @@ function M.tool_patch(update)
   if update.kind then
     patch.kind = update.kind
   end
+  if update.rawInput ~= nil then
+    patch.raw_input = update.rawInput
+  end
+  if update.content ~= nil then
+    patch.content = update.content
+  end
+  if update.locations ~= nil then
+    patch.locations = update.locations
+  end
   return patch
 end
 

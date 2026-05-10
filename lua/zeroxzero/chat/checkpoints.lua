@@ -356,28 +356,156 @@ function M:review()
   self:_open_review_entry(review, 1)
 end
 
+---Build a row label combining attached-overlay hunk counts and any files
+---changed since the checkpoint that don't currently have an open buffer.
+---@return { path: string, abs: string, hunks: integer|nil, bufnr: integer|nil }[]
+local function changes_rows(self)
+  local rows = {}
+  local seen = {}
+  for _, e in ipairs(InlineDiff.list_attached()) do
+    rows[#rows + 1] = {
+      path = e.path,
+      abs = self.checkpoint.root .. "/" .. e.path,
+      hunks = e.hunks,
+      bufnr = e.bufnr,
+    }
+    seen[e.path] = true
+  end
+  for _, p in ipairs(Checkpoint.changed_files(self.checkpoint)) do
+    if not seen[p] then
+      rows[#rows + 1] = {
+        path = p,
+        abs = self.checkpoint.root .. "/" .. p,
+        hunks = nil,
+        bufnr = nil,
+      }
+    end
+  end
+  table.sort(rows, function(a, b)
+    return a.path < b.path
+  end)
+  return rows
+end
+
+local function row_label(row)
+  if row.hunks then
+    return ("%-40s  %d hunk%s"):format(row.path, row.hunks, row.hunks == 1 and "" or "s")
+  end
+  return ("%-40s  (no open buffer)"):format(row.path)
+end
+
 function M:show_changes()
   if not self.checkpoint then
     vim.notify("0x0: no active checkpoint", vim.log.levels.INFO)
     return
   end
-  local files = Checkpoint.changed_files(self.checkpoint)
-  if #files == 0 then
+  local rows = changes_rows(self)
+  if #rows == 0 then
     vim.notify("0x0: no changes since checkpoint", vim.log.levels.INFO)
     return
   end
-  vim.ui.select(files, {
-    prompt = ("0x0: %d changed file%s"):format(#files, #files == 1 and "" or "s"),
-    format_item = function(p)
-      return p
-    end,
-  }, function(choice)
-    if not choice then
+
+  local lines = {}
+  for i, r in ipairs(rows) do
+    lines[i] = row_label(r)
+  end
+
+  local width = math.min(vim.o.columns - 6, 80)
+  local height = math.min(#lines + 1, math.floor(vim.o.lines * 0.4))
+  local buf = vim.api.nvim_create_buf(false, true)
+  vim.bo[buf].buftype = "nofile"
+  vim.bo[buf].bufhidden = "wipe"
+  vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
+  vim.bo[buf].modifiable = false
+
+  local win = vim.api.nvim_open_win(buf, true, {
+    relative = "editor",
+    width = width,
+    height = height,
+    row = math.floor((vim.o.lines - height) / 2),
+    col = math.floor((vim.o.columns - width) / 2),
+    style = "minimal",
+    border = "rounded",
+    title = (" 0x0 changes (%d file%s) "):format(#rows, #rows == 1 and "" or "s"),
+    title_pos = "center",
+  })
+  vim.wo[win].cursorline = true
+
+  local self_ref = self
+  local closed = false
+
+  local function close()
+    if closed then
       return
     end
-    local abs = self.checkpoint.root .. "/" .. choice
-    vim.cmd("edit " .. vim.fn.fnameescape(abs))
-  end)
+    closed = true
+    if vim.api.nvim_win_is_valid(win) then
+      pcall(vim.api.nvim_win_close, win, true)
+    end
+  end
+
+  local function refresh()
+    rows = changes_rows(self_ref)
+    if #rows == 0 then
+      close()
+      return
+    end
+    local new_lines = {}
+    for i, r in ipairs(rows) do
+      new_lines[i] = row_label(r)
+    end
+    vim.bo[buf].modifiable = true
+    vim.api.nvim_buf_set_lines(buf, 0, -1, false, new_lines)
+    vim.bo[buf].modifiable = false
+  end
+
+  local function current_row()
+    local idx = vim.api.nvim_win_get_cursor(win)[1]
+    return rows[idx], idx
+  end
+
+  local opts = { buffer = buf, nowait = true, silent = true }
+  vim.keymap.set("n", "q", close, vim.tbl_extend("force", opts, { desc = "0x0 changes: close" }))
+  vim.keymap.set("n", "<Esc>", close, vim.tbl_extend("force", opts, { desc = "0x0 changes: close" }))
+  vim.keymap.set("n", "<CR>", function()
+    local r = current_row()
+    if not r then
+      return
+    end
+    close()
+    vim.cmd("edit " .. vim.fn.fnameescape(r.abs))
+    if r.hunks and r.hunks > 0 then
+      pcall(InlineDiff.next_hunk)
+    end
+  end, vim.tbl_extend("force", opts, { desc = "0x0 changes: open file" }))
+  vim.keymap.set("n", "a", function()
+    local r = current_row()
+    if not r or not r.bufnr then
+      vim.notify("0x0: file is not open in a buffer", vim.log.levels.INFO)
+      return
+    end
+    local cur_win = vim.api.nvim_get_current_win()
+    pcall(vim.api.nvim_set_current_buf, r.bufnr)
+    InlineDiff.accept_file()
+    if vim.api.nvim_win_is_valid(cur_win) then
+      pcall(vim.api.nvim_set_current_win, cur_win)
+    end
+    refresh()
+  end, vim.tbl_extend("force", opts, { desc = "0x0 changes: accept file" }))
+  vim.keymap.set("n", "r", function()
+    local r = current_row()
+    if not r or not r.bufnr then
+      vim.notify("0x0: file is not open in a buffer", vim.log.levels.INFO)
+      return
+    end
+    local cur_win = vim.api.nvim_get_current_win()
+    pcall(vim.api.nvim_set_current_buf, r.bufnr)
+    InlineDiff.reject_file()
+    if vim.api.nvim_win_is_valid(cur_win) then
+      pcall(vim.api.nvim_set_current_win, cur_win)
+    end
+    refresh()
+  end, vim.tbl_extend("force", opts, { desc = "0x0 changes: reject file" }))
 end
 
 function M:new_session()

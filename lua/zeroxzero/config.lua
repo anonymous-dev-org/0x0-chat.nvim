@@ -58,6 +58,8 @@ M.defaults = {
   initialize_retries = 3,
   checkpoint_keep_n = 20,
   reconcile = "strict",
+  tool_policy = { auto_approve = { "read" } },
+  tool_output_max_lines = 200,
   providers = {
     ["claude-acp"] = {
       name = "Claude ACP",

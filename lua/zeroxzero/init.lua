@@ -60,6 +60,10 @@ function M.setup(opts)
     require("zeroxzero.chat").add_current_hunk()
   end, { desc = "Add the current 0x0 diff hunk to the pending chat prompt" })
 
+  vim.api.nvim_create_user_command("ZeroChatAddSelection", function()
+    require("zeroxzero.chat").add_visual_selection_from_prev()
+  end, { desc = "Attach the last visual selection from the prior window as a line-range mention" })
+
   vim.api.nvim_create_user_command("ZeroChatDiff", function(args)
     local id = args.args
     if id == "" then
