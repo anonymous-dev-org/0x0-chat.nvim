@@ -6,20 +6,47 @@ local M = {}
 ---@field args? string[]
 ---@field env? table<string, string>
 ---@field models? string[]
+---@field ignore_stderr_patterns? string[]  Lua patterns; matching stderr lines are silenced
 
 ---@class zeroxzero.Config
 ---@field provider string
 ---@field width number
 ---@field input_height integer
----@field sound string|false
+---@field sound string|false  one of: false / "off" / "bell" / "notification" / absolute path
+---@field request_timeout_ms integer  per-request ACP timeout (cancelled with timeout error after)
+---@field idle_kill_ms integer  kill provider subprocess if no stdout/stderr for this long during a request
+---@field initialize_retries integer  retry count for the ACP initialize handshake
 ---@field providers table<string, zeroxzero.ProviderConfig>
+
+-- Default stderr noise patterns by provider. Users can extend or override
+-- these via config.providers.<name>.ignore_stderr_patterns.
+local DEFAULT_STDERR_PATTERNS = {
+  ["claude-acp"] = {
+    "Session not found",
+    "session/prompt",
+    "Spawning Claude Code",
+    "does not appear in the file:",
+    "Experiments loaded",
+    "No onPostToolUseHook found",
+    "%[PreToolUseHook%]",
+  },
+  ["claude-agent-acp"] = {
+    "Session not found",
+    "session/prompt",
+    "Spawning Claude Code",
+    "Experiments loaded",
+  },
+}
 
 ---@type zeroxzero.Config
 M.defaults = {
   provider = "claude-acp",
   width = 0.4,
   input_height = 8,
-  sound = vim.fn.has("mac") == 1 and "/System/Library/Sounds/Blow.aiff" or false,
+  sound = vim.fn.has("mac") == 1 and "notification" or "bell",
+  request_timeout_ms = 60000,
+  idle_kill_ms = 120000,
+  initialize_retries = 3,
   checkpoint_keep_n = 20,
   reconcile = "strict",
   providers = {
@@ -27,11 +54,13 @@ M.defaults = {
       name = "Claude ACP",
       command = "claude-code-acp",
       models = { "claude-opus-4-7", "claude-sonnet-4-6", "claude-haiku-4-5" },
+      ignore_stderr_patterns = DEFAULT_STDERR_PATTERNS["claude-acp"],
     },
     ["claude-agent-acp"] = {
       name = "Claude Agent ACP",
       command = "claude-agent-acp",
       models = { "claude-opus-4-7", "claude-sonnet-4-6", "claude-haiku-4-5" },
+      ignore_stderr_patterns = DEFAULT_STDERR_PATTERNS["claude-agent-acp"],
     },
     ["codex-acp"] = {
       name = "Codex ACP",

@@ -48,6 +48,14 @@ function M.setup(opts)
     require("zeroxzero.chat").changes()
   end, { desc = "List files changed since the active 0x0 checkpoint" })
 
+  vim.api.nvim_create_user_command("ZeroChatDiff", function(args)
+    local id = args.args
+    if id == "" then
+      id = nil
+    end
+    require("zeroxzero.chat").diff(id)
+  end, { desc = "Show the turn diff (or per-tool diff with an id)", nargs = "?" })
+
   vim.api.nvim_create_user_command("ZeroChatAcceptAll", function()
     require("zeroxzero.chat").accept_all()
   end, { desc = "Accept all pending chat changes and clear the checkpoint" })
@@ -68,6 +76,10 @@ function M.setup(opts)
   vim.api.nvim_create_user_command("ZeroChatHistory", function()
     require("zeroxzero.chat").history_picker()
   end, { desc = "Pick a saved chat thread to restore" })
+
+  vim.api.nvim_create_user_command("ZeroChatLog", function()
+    require("zeroxzero.log").open()
+  end, { desc = "Open the 0x0 chat debug log" })
 end
 
 return M

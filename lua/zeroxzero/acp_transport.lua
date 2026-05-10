@@ -1,19 +1,10 @@
 local uv = vim.uv or vim.loop
+local log = require("zeroxzero.log")
 
 local M = {}
 
-local IGNORE_STDERR_PATTERNS = {
-  "Session not found",
-  "session/prompt",
-  "Spawning Claude Code",
-  "does not appear in the file:",
-  "Experiments loaded",
-  "No onPostToolUseHook found",
-  "[PreToolUseHook]",
-}
-
-local function should_ignore_stderr(line)
-  for _, pattern in ipairs(IGNORE_STDERR_PATTERNS) do
+local function should_ignore_stderr(line, patterns)
+  for _, pattern in ipairs(patterns or {}) do
     if line:match(pattern) then
       return true
     end
@@ -40,14 +31,67 @@ local function build_env(overrides)
   return list
 end
 
----@param config { command: string, args?: string[], env?: table<string, string> }
----@param callbacks { on_state: fun(state: string), on_message: fun(msg: table), on_exit?: fun(code: integer, stderr: string[]) }
-function M.create(config, callbacks)
-  local self = { stdin = nil, stdout = nil, process = nil }
+---@param config { command: string, args?: string[], env?: table<string, string>, ignore_stderr_patterns?: string[] }
+---@param callbacks { on_state: fun(state: string), on_message: fun(msg: table), on_exit?: fun(code: integer, stderr: string[]), on_idle?: fun(ms: integer) }
+---@param opts? { idle_kill_ms?: integer }
+function M.create(config, callbacks, opts)
+  opts = opts or {}
+  local idle_kill_ms = opts.idle_kill_ms or 0
+  local self = {
+    stdin = nil,
+    stdout = nil,
+    process = nil,
+    idle_timer = nil,
+    idle_armed = false,
+  }
+
+  local function stop_idle_timer()
+    if self.idle_timer then
+      self.idle_timer:stop()
+      self.idle_timer:close()
+      self.idle_timer = nil
+    end
+  end
+
+  local function bump_idle()
+    if not self.idle_armed or idle_kill_ms <= 0 then
+      return
+    end
+    if not self.idle_timer then
+      self.idle_timer = uv.new_timer()
+    end
+    self.idle_timer:stop()
+    self.idle_timer:start(
+      idle_kill_ms,
+      0,
+      vim.schedule_wrap(function()
+        log.warn(
+          ("acp[%s]: no I/O for %d ms — killing subprocess"):format(config.name or config.command, idle_kill_ms)
+        )
+        if callbacks.on_idle then
+          callbacks.on_idle(idle_kill_ms)
+        end
+        if self.stop then
+          self:stop()
+        end
+      end)
+    )
+  end
+
+  ---@param armed boolean true while a request is in flight; arms the idle timer
+  function self:set_idle_armed(armed)
+    self.idle_armed = armed and true or false
+    if not self.idle_armed then
+      stop_idle_timer()
+    else
+      bump_idle()
+    end
+  end
 
   function self:send(data)
     if self.stdin and not self.stdin:is_closing() then
       self.stdin:write(data .. "\n")
+      bump_idle()
       return true
     end
     return false
@@ -66,6 +110,7 @@ function M.create(config, callbacks)
 
     local stderr_buffer = {}
     local args = vim.deepcopy(config.args or {})
+    local stderr_patterns = config.ignore_stderr_patterns
 
     local ok, handle, pid_or_err = pcall(uv.spawn, config.command, {
       args = args,
@@ -73,6 +118,7 @@ function M.create(config, callbacks)
       stdio = { stdin, stdout, stderr },
       detached = false,
     }, function(code, _signal)
+      stop_idle_timer()
       if callbacks.on_exit then
         vim.schedule(function()
           callbacks.on_exit(code, stderr_buffer)
@@ -90,6 +136,7 @@ function M.create(config, callbacks)
       stdout:close()
       stderr:close()
       callbacks.on_state("error")
+      log.error(("acp: spawn failed for '%s': %s"):format(config.command, tostring(handle or pid_or_err)))
       vim.schedule(function()
         vim.notify(
           ("acp: failed to spawn '%s': %s"):format(config.command, tostring(handle or pid_or_err)),
@@ -108,6 +155,7 @@ function M.create(config, callbacks)
     local buffered = ""
     stdout:read_start(function(err, data)
       if err then
+        log.error("acp stdout error: " .. err)
         vim.schedule(function()
           vim.notify("acp stdout error: " .. err, vim.log.levels.ERROR)
         end)
@@ -117,16 +165,18 @@ function M.create(config, callbacks)
       if not data then
         return
       end
+      bump_idle()
       buffered = buffered .. data
       local lines = vim.split(buffered, "\n", { plain = true })
       buffered = lines[#lines]
       for i = 1, #lines - 1 do
         local line = vim.trim(lines[i])
         if line ~= "" then
-          local ok, message = pcall(vim.json.decode, line)
-          if ok then
+          local decode_ok, message = pcall(vim.json.decode, line)
+          if decode_ok then
             callbacks.on_message(message)
           else
+            log.warn("acp: failed to decode JSON line: " .. line)
             vim.schedule(function()
               vim.notify("acp: failed to decode JSON line: " .. line, vim.log.levels.WARN)
             end)
@@ -139,12 +189,14 @@ function M.create(config, callbacks)
       if not data then
         return
       end
+      bump_idle()
       local trimmed = vim.trim(data)
       if trimmed == "" then
         return
       end
       stderr_buffer[#stderr_buffer + 1] = trimmed
-      if not should_ignore_stderr(data) then
+      log.debug("acp stderr: " .. trimmed)
+      if not should_ignore_stderr(data, stderr_patterns) then
         vim.schedule(function()
           vim.notify("acp stderr: " .. trimmed, vim.log.levels.DEBUG)
         end)
@@ -153,6 +205,7 @@ function M.create(config, callbacks)
   end
 
   function self:stop()
+    stop_idle_timer()
     if self.process and not self.process:is_closing() then
       local p = self.process
       self.process = nil

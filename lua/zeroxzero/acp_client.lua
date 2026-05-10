@@ -1,6 +1,14 @@
 local transport_mod = require("zeroxzero.acp_transport")
+local config = require("zeroxzero.config")
+local log = require("zeroxzero.log")
 
 local M = {}
+
+-- Some requests are inherently long-running (a streaming model turn) and
+-- should not be timed out by the per-request watchdog.
+local NON_TIMED_METHODS = {
+  ["session/prompt"] = true,
+}
 
 local Client = {}
 Client.__index = Client
@@ -32,17 +40,22 @@ function M.new(provider, opts)
     end,
     on_exit = function(code, stderr_lines)
       if code ~= 0 then
+        local stderr_blob = table.concat(stderr_lines, "\n")
+        log.error(("acp[%s]: exited with code %d\n%s"):format(provider.name or provider.command, code, stderr_blob))
         vim.notify(
-          ("acp[%s]: exited with code %d\n%s"):format(
+          ("acp[%s]: exited with code %d (see :ZeroChatLog for details)"):format(
             provider.name or provider.command,
-            code,
-            table.concat(stderr_lines, "\n")
+            code
           ),
           vim.log.levels.ERROR
         )
       end
     end,
-  })
+    on_idle = function(ms)
+      log.error(("acp[%s]: idle for %d ms — provider considered hung"):format(provider.name or provider.command, ms))
+      self:_fail_all_pending({ code = -32001, message = "provider hung (no I/O)" })
+    end,
+  }, { idle_kill_ms = config.current.idle_kill_ms or 0 })
 
   return self
 end
@@ -50,21 +63,36 @@ end
 function Client:_on_state(state)
   self.state = state
   if state == "disconnected" or state == "error" then
-    local err = { code = -32000, message = "transport " .. state }
-    local pending = self.callbacks
-    self.callbacks = {}
-    for _, cb in pairs(pending) do
-      vim.schedule(function()
-        pcall(cb, nil, err)
-      end)
-    end
+    self:_fail_all_pending({ code = -32000, message = "transport " .. state })
     local listeners = self.ready_listeners
     self.ready_listeners = {}
     for _, listener in ipairs(listeners) do
       vim.schedule(function()
-        pcall(listener, nil, err)
+        pcall(listener, nil, { code = -32000, message = "transport " .. state })
       end)
     end
+  end
+end
+
+---Reject every pending callback with err. Used by transport disconnects and
+---the idle watchdog so callers aren't left hanging.
+---@param err table
+function Client:_fail_all_pending(err)
+  local pending = self.callbacks
+  self.callbacks = {}
+  for id, entry in pairs(pending) do
+    if entry.timer then
+      pcall(function()
+        entry.timer:stop()
+        entry.timer:close()
+      end)
+    end
+    vim.schedule(function()
+      pcall(entry.cb, nil, err)
+    end)
+  end
+  if self.transport and self.transport.set_idle_armed then
+    self.transport:set_idle_armed(false)
   end
 end
 
@@ -78,7 +106,38 @@ end
 ---@param callback fun(result: table|nil, err: table|nil)
 function Client:request(method, params, callback)
   local id = self:_next_id()
-  self.callbacks[id] = callback
+  local entry = { cb = callback, method = method }
+  self.callbacks[id] = entry
+
+  local timeout = config.current.request_timeout_ms or 0
+  if timeout > 0 and not NON_TIMED_METHODS[method] then
+    local timer = vim.uv.new_timer()
+    entry.timer = timer
+    timer:start(
+      timeout,
+      0,
+      vim.schedule_wrap(function()
+        local pending = self.callbacks[id]
+        if not pending then
+          return
+        end
+        self.callbacks[id] = nil
+        if pending.timer then
+          pcall(function()
+            pending.timer:stop()
+            pending.timer:close()
+          end)
+        end
+        log.warn(("acp: request '%s' (id=%d) timed out after %d ms"):format(method, id, timeout))
+        pcall(pending.cb, nil, { code = -32001, message = "request timed out", data = { method = method } })
+      end)
+    )
+  end
+
+  if self.transport and self.transport.set_idle_armed then
+    self.transport:set_idle_armed(true)
+  end
+
   local data = vim.json.encode({ jsonrpc = "2.0", id = id, method = method, params = params or vim.empty_dict() })
   self.transport:send(data)
 end
@@ -132,11 +191,20 @@ function Client:_on_message(message)
   end
 
   if message.id ~= nil and (message.result ~= nil or message.error ~= nil) then
-    local cb = self.callbacks[message.id]
-    if cb then
+    local entry = self.callbacks[message.id]
+    if entry then
       self.callbacks[message.id] = nil
+      if entry.timer then
+        pcall(function()
+          entry.timer:stop()
+          entry.timer:close()
+        end)
+      end
+      if not next(self.callbacks) and self.transport and self.transport.set_idle_armed then
+        self.transport:set_idle_armed(false)
+      end
       vim.schedule(function()
-        cb(message.result, message.error)
+        entry.cb(message.result, message.error)
       end)
     end
     return
@@ -215,7 +283,13 @@ function Client:start(on_ready)
 
   self.transport:start()
   self.state = "initializing"
+  self:_initialize_with_retry(0)
+end
 
+local INITIALIZE_BACKOFF_MS = { 250, 500, 1000 }
+
+function Client:_initialize_with_retry(attempt)
+  local max = config.current.initialize_retries or 3
   self:request("initialize", {
     protocolVersion = self.protocol_version,
     clientInfo = { name = "0x0-chat-nvim", version = "0.1.0" },
@@ -228,6 +302,25 @@ function Client:start(on_ready)
     },
   }, function(result, err)
     if err or not result then
+      if attempt + 1 < max then
+        local delay = INITIALIZE_BACKOFF_MS[attempt + 1] or 1000
+        log.warn(
+          ("acp: initialize failed (attempt %d/%d), retrying in %d ms: %s"):format(
+            attempt + 1,
+            max,
+            delay,
+            vim.inspect(err)
+          )
+        )
+        vim.defer_fn(function()
+          if self.state ~= "initializing" then
+            return
+          end
+          self:_initialize_with_retry(attempt + 1)
+        end, delay)
+        return
+      end
+      log.error("acp: initialize failed after retries: " .. vim.inspect(err))
       vim.notify("acp: initialize failed: " .. vim.inspect(err), vim.log.levels.ERROR)
       self:_on_state("error")
       return

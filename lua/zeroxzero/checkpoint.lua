@@ -90,27 +90,44 @@ end
 
 ---Take a snapshot of the working tree (including untracked, excluding gitignored)
 ---onto a hidden ref. Falls back to HEAD when the working tree is clean.
+---
+---Pass `opts.ref_suffix` to nest the ref under a parent (e.g. a tool-call
+---checkpoint under a turn). Pass `opts.parent_sha` so the snapshot commit
+---chains onto a specific parent rather than HEAD.
 ---@param root string repo root
+---@param opts? { ref_suffix?: string, parent_sha?: string, label?: string }
 ---@return table|nil checkpoint, string|nil err
-function M.snapshot(root)
+function M.snapshot(root, opts)
   if not root then
     return nil, "checkpoint: no root"
   end
+  opts = opts or {}
   local turn_id = new_turn_id()
-  local ref = "refs/zeroxzero/checkpoints/" .. turn_id
+  local ref
+  if opts.ref_suffix and opts.ref_suffix ~= "" then
+    ref = "refs/zeroxzero/checkpoints/" .. opts.ref_suffix
+  else
+    ref = "refs/zeroxzero/checkpoints/" .. turn_id
+  end
 
   local tree = working_tree_tree(root)
   if not tree then
     return nil, "git write-tree failed during checkpoint snapshot"
   end
 
-  local head = chomp(system({ "git", "-C", root, "rev-parse", "--verify", "HEAD" }))
-  local has_head = vim.v.shell_error == 0 and head ~= ""
+  local parent_sha = opts.parent_sha
+  if not parent_sha then
+    local head = chomp(system({ "git", "-C", root, "rev-parse", "--verify", "HEAD" }))
+    if vim.v.shell_error == 0 and head ~= "" then
+      parent_sha = head
+    end
+  end
 
-  local commit_args = { "git", "-C", root, "commit-tree", tree, "-m", "0x0 chat checkpoint " .. turn_id }
-  if has_head then
+  local label = opts.label or ("0x0 chat checkpoint " .. turn_id)
+  local commit_args = { "git", "-C", root, "commit-tree", tree, "-m", label }
+  if parent_sha and parent_sha ~= "" then
     table.insert(commit_args, "-p")
-    table.insert(commit_args, head)
+    table.insert(commit_args, parent_sha)
   end
 
   local sha = chomp(system(commit_args))

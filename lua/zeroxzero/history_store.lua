@@ -1,3 +1,5 @@
+local log = require("zeroxzero.log")
+
 local M = {}
 
 local function dir()
@@ -42,10 +44,13 @@ function M.save(entry)
   entry.title = derive_title(entry.messages) or entry.title or "untitled"
   local ok, encoded = pcall(vim.json.encode, entry)
   if not ok then
+    log.error("history_store: encode failed for " .. entry.id .. ": " .. tostring(encoded))
     return
   end
-  local file = io.open(path_for(entry.id), "w")
+  local p = path_for(entry.id)
+  local file, ferr = io.open(p, "w")
   if not file then
+    log.error("history_store: open(w) failed for " .. p .. ": " .. tostring(ferr))
     return
   end
   file:write(encoded)
@@ -55,7 +60,8 @@ end
 ---@param id string
 ---@return table|nil
 function M.load(id)
-  local file = io.open(path_for(id), "r")
+  local p = path_for(id)
+  local file = io.open(p, "r")
   if not file then
     return nil
   end
@@ -63,6 +69,7 @@ function M.load(id)
   file:close()
   local ok, decoded = pcall(vim.json.decode, content)
   if not ok then
+    log.error("history_store: decode failed for " .. p .. ": " .. tostring(decoded))
     return nil
   end
   return decoded
