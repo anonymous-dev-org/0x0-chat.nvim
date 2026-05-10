@@ -45,7 +45,7 @@ local KEY_TO_KIND = {
 local INPUT_HINTS = {
   { "<CR>", "submit" },
   { "<lc>c", "cancel" },
-  { "<lc>d", "diff" },
+  { "<lc>d", "review" },
   { "@", "files" },
 }
 
@@ -197,8 +197,8 @@ function ChatWidget:_ensure_input_buf()
     self.on_cancel()
   end, vim.tbl_extend("force", opts, { desc = "0x0 chat cancel" }))
   vim.keymap.set("n", "<localleader>d", function()
-    require("zeroxzero.chat").diff()
-  end, vim.tbl_extend("force", opts, { desc = "0x0 chat turn diff" }))
+    require("zeroxzero.chat").review()
+  end, vim.tbl_extend("force", opts, { desc = "0x0 chat review diff" }))
   vim.keymap.set("i", "@", function()
     vim.schedule(file_completion.trigger)
     return "@"
