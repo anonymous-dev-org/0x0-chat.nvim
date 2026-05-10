@@ -160,6 +160,7 @@ local function disable_ambient_completion(bufnr)
   vim.bo[bufnr].completefunc = ""
   vim.bo[bufnr].omnifunc = ""
   vim.bo[bufnr].tagfunc = ""
+  vim.bo[bufnr].complete = ""
   vim.b[bufnr].cmp_enabled = false
   vim.b[bufnr].blink_cmp_enabled = false
 end
@@ -268,6 +269,34 @@ function ChatWidget:_ensure_input_buf()
     end
     return "@"
   end, vim.tbl_extend("force", opts, { desc = "0x0 chat file mention", expr = true }))
+  vim.keymap.set("i", "<C-n>", function()
+    if file_completion.select_next(1) then
+      return ""
+    end
+    return ""
+  end, vim.tbl_extend("force", opts, { desc = "0x0 chat next file mention", expr = true }))
+  vim.keymap.set("i", "<C-p>", function()
+    if file_completion.select_next(-1) then
+      return ""
+    end
+    return ""
+  end, vim.tbl_extend("force", opts, { desc = "0x0 chat previous file mention", expr = true }))
+  vim.keymap.set("i", "<Tab>", function()
+    if file_completion.accept() then
+      return ""
+    end
+    return vim.api.nvim_replace_termcodes("<Tab>", true, false, true)
+  end, vim.tbl_extend("force", opts, { desc = "0x0 chat accept file mention", expr = true }))
+  vim.keymap.set("i", "<CR>", function()
+    if file_completion.accept() then
+      return ""
+    end
+    return vim.api.nvim_replace_termcodes("<CR>", true, false, true)
+  end, vim.tbl_extend("force", opts, { desc = "0x0 chat accept file mention", expr = true }))
+  vim.keymap.set("i", "<Esc>", function()
+    file_completion.close()
+    return vim.api.nvim_replace_termcodes("<Esc>", true, false, true)
+  end, vim.tbl_extend("force", opts, { desc = "0x0 chat close file mention", expr = true }))
   vim.keymap.set("n", "<C-p>", function()
     self:nav_history(-1)
   end, vim.tbl_extend("force", opts, { desc = "0x0 chat previous prompt" }))
@@ -276,6 +305,7 @@ function ChatWidget:_ensure_input_buf()
   end, vim.tbl_extend("force", opts, { desc = "0x0 chat next prompt" }))
 
   self.input_buf = bufnr
+  file_completion.attach(bufnr)
   self.mention_summary = { paths = {}, total = 0 }
   mention_highlight.attach(bufnr, vim.fn.getcwd(), function(summary)
     self.mention_summary = summary

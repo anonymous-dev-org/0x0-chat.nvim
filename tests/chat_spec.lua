@@ -138,7 +138,7 @@ describe("chat widget rendering", function()
     vim.cmd("tabclose")
   end)
 
-  it("keeps the input clean and leaves insert-mode ctrl keys alone", function()
+  it("keeps the input clean and suppresses insert-mode completion noise", function()
     local History = require("zeroxzero.history")
     local ChatWidget = require("zeroxzero.chat_widget")
     local history = History.new()
@@ -148,11 +148,11 @@ describe("chat widget rendering", function()
     widget:open()
 
     assert.are.equal("", vim.wo[widget.input_win].winbar)
-    assert.is_nil(vim.fn.maparg("<C-n>", "i", false, true).buffer)
-    assert.is_nil(vim.fn.maparg("<C-p>", "i", false, true).buffer)
+    assert.are.equal("", vim.bo[widget.input_buf].complete)
+    assert.are.equal(1, vim.fn.maparg("<C-n>", "i", false, true).buffer)
+    assert.are.equal(1, vim.fn.maparg("<C-p>", "i", false, true).buffer)
     assert.are.equal(1, vim.fn.maparg("<C-n>", "n", false, true).buffer)
     assert.are.equal(1, vim.fn.maparg("<C-p>", "n", false, true).buffer)
-    assert.not_equal("", vim.bo[widget.input_buf].complete)
 
     vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("iabc<C-n>def", true, false, true), "xt", false)
     local lines = vim.api.nvim_buf_get_lines(widget.input_buf, 0, -1, false)
@@ -160,5 +160,36 @@ describe("chat widget rendering", function()
 
     widget:close()
     vim.cmd("tabclose")
+  end)
+
+  it("accepts @ file mentions from the owned dropdown", function()
+    local History = require("zeroxzero.history")
+    local ChatWidget = require("zeroxzero.chat_widget")
+    local file_completion = require("zeroxzero.file_completion")
+    local repo = vim.loop.fs_realpath(helpers.make_repo({
+      ["src/main.lua"] = "print('ok')\n",
+      ["src/worker.lua"] = "return {}\n",
+      ["notes/with space.md"] = "unsupported for now\n",
+    }))
+    local previous_cwd = vim.fn.getcwd()
+    vim.cmd("lcd " .. vim.fn.fnameescape(repo))
+
+    local history = History.new()
+    vim.cmd("tabnew")
+    local widget = ChatWidget.new(vim.api.nvim_get_current_tabpage(), history, function() end, function() end)
+    widget:open()
+
+    vim.api.nvim_buf_set_lines(widget.input_buf, 0, -1, false, { "@src/m" })
+    vim.api.nvim_win_set_cursor(widget.input_win, { 1, #"@src/m" })
+    file_completion.trigger()
+    assert.is_true(file_completion.accept())
+
+    local lines = vim.api.nvim_buf_get_lines(widget.input_buf, 0, -1, false)
+    assert.are.equal("@src/main.lua ", lines[1])
+
+    widget:close()
+    vim.cmd("tabclose")
+    vim.cmd("lcd " .. vim.fn.fnameescape(previous_cwd))
+    helpers.cleanup(repo)
   end)
 end)
