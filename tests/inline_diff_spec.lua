@@ -160,6 +160,27 @@ describe("inline_diff hunk navigation", function()
     InlineDiff.prev_hunk()
     assert.are.equal(2, vim.api.nvim_win_get_cursor(0)[1])
   end)
+
+  it("returns a prompt-ready reference for the hunk under cursor", function()
+    setup_buf({ "keep", "new", "tail" }, {
+      path = "src/a.lua",
+      type = "modify",
+      hunks = {
+        {
+          old_start = 1,
+          old_count = 3,
+          new_start = 1,
+          new_count = 3,
+          old_lines = { "old" },
+          new_lines = { "new" },
+        },
+      },
+    })
+    vim.api.nvim_win_set_cursor(0, { 2, 0 })
+    local ref = assert(InlineDiff.current_hunk_reference())
+    assert.are.equal("src/a.lua", ref.path)
+    assert.are.same({ "@@ -1,3 +1,3 @@", "-old", "+new" }, ref.lines)
+  end)
 end)
 
 describe("inline_diff accept/reject", function()

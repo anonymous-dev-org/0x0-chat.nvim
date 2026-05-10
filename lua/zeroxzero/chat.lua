@@ -7,6 +7,7 @@ local History = require("zeroxzero.history")
 local HistoryStore = require("zeroxzero.history_store")
 local ChatWidget = require("zeroxzero.chat_widget")
 local Checkpoint = require("zeroxzero.checkpoint")
+local InlineDiff = require("zeroxzero.inline_diff")
 
 local api = vim.api
 
@@ -27,6 +28,9 @@ local api = vim.api
 ---@field checkpoint table|nil
 ---@field repo_root string|nil
 ---@field reconcile zeroxzero.Reconcile|nil
+---@field title string|nil
+---@field title_requested boolean
+---@field title_pending boolean
 local Chat = {}
 Chat.__index = Chat
 
@@ -63,6 +67,9 @@ function Chat.new(tab_page_id)
     repo_root = nil,
     reconcile = nil,
     persist_id = HistoryStore.new_id(),
+    title = nil,
+    title_requested = false,
+    title_pending = false,
     persist_created_at = os.time(),
     persist_timer = nil,
   }, Chat)
@@ -145,6 +152,43 @@ function Chat:add_selection(sel)
   self.widget:prepend_input(block)
   self:open()
   self.widget:focus_input()
+end
+
+---@param lines string[]
+function Chat:_add_prompt_block(lines)
+  self.widget:prepend_input(lines)
+  self:open()
+  self.widget:focus_input()
+end
+
+function Chat:add_current_file()
+  local path = api.nvim_buf_get_name(0)
+  if path == "" then
+    vim.notify("0x0: current buffer has no file path", vim.log.levels.INFO)
+    return
+  end
+  local root = self.repo_root or Checkpoint.git_root(vim.fn.getcwd())
+  local rel = vim.fn.fnamemodify(path, ":~:.")
+  if root and path:sub(1, #root + 1) == root .. "/" then
+    rel = path:sub(#root + 2)
+  end
+  self:_add_prompt_block({ "@" .. rel, "" })
+end
+
+function Chat:add_current_hunk()
+  local ref = InlineDiff.current_hunk_reference()
+  if not ref then
+    vim.notify("0x0: no chat diff hunk under cursor", vim.log.levels.INFO)
+    return
+  end
+  local block = {
+    ("Changed hunk in %s:"):format(ref.path),
+    "```diff",
+  }
+  vim.list_extend(block, ref.lines)
+  block[#block + 1] = "```"
+  block[#block + 1] = ""
+  self:_add_prompt_block(block)
 end
 
 function Chat:close()
@@ -251,6 +295,18 @@ end
 
 function M.changes()
   for_current_tab():show_changes()
+end
+
+function M.review()
+  for_current_tab():review()
+end
+
+function M.add_current_file()
+  for_current_tab():add_current_file()
+end
+
+function M.add_current_hunk()
+  for_current_tab():add_current_hunk()
 end
 
 ---@param tool_call_id? string

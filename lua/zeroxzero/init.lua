@@ -48,6 +48,18 @@ function M.setup(opts)
     require("zeroxzero.chat").changes()
   end, { desc = "List files changed since the active 0x0 checkpoint" })
 
+  vim.api.nvim_create_user_command("ZeroChatReview", function()
+    require("zeroxzero.chat").review()
+  end, { desc = "Review chat changes in vimdiff against the turn checkpoint" })
+
+  vim.api.nvim_create_user_command("ZeroChatAddFile", function()
+    require("zeroxzero.chat").add_current_file()
+  end, { desc = "Add the current file to the pending chat prompt" })
+
+  vim.api.nvim_create_user_command("ZeroChatAddHunk", function()
+    require("zeroxzero.chat").add_current_hunk()
+  end, { desc = "Add the current 0x0 diff hunk to the pending chat prompt" })
+
   vim.api.nvim_create_user_command("ZeroChatDiff", function(args)
     local id = args.args
     if id == "" then

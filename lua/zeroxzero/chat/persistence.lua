@@ -18,6 +18,7 @@ end
 function M:_persist_now()
   HistoryStore.save({
     id = self.persist_id,
+    title = self.title,
     created_at = self.persist_created_at,
     messages = self.history.messages,
     settings = {
@@ -44,6 +45,9 @@ function M:load_thread(id)
     end
   end
   self.persist_id = entry.id
+  self.title = entry.title
+  self.title_requested = entry.title and entry.title ~= "" and entry.title ~= "untitled"
+  self.title_pending = false
   self.persist_created_at = entry.created_at or os.time()
   if entry.settings then
     self.provider_name = entry.settings.provider or self.provider_name

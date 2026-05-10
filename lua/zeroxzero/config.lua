@@ -12,6 +12,8 @@ local M = {}
 ---@field provider string
 ---@field width number
 ---@field input_height integer
+---@field show_input_hints boolean
+---@field title_model string|table<string, string>|nil
 ---@field sound string|false  one of: false / "off" / "bell" / "notification" / absolute path
 ---@field request_timeout_ms integer  per-request ACP timeout (cancelled with timeout error after)
 ---@field idle_kill_ms integer  kill provider subprocess if no stdout/stderr for this long during a request
@@ -43,6 +45,13 @@ M.defaults = {
   provider = "claude-acp",
   width = 0.4,
   input_height = 8,
+  show_input_hints = false,
+  title_model = {
+    ["claude-acp"] = "claude-haiku-4-5",
+    ["claude-agent-acp"] = "claude-haiku-4-5",
+    ["codex-acp"] = "o3",
+    ["gemini-acp"] = "gemini-2.5-flash",
+  },
   sound = vim.fn.has("mac") == 1 and "notification" or "bell",
   request_timeout_ms = 60000,
   idle_kill_ms = 120000,

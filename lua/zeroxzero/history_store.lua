@@ -19,18 +19,6 @@ local function new_id()
   return ("%d-%d"):format(os.time(), math.random(1, 1e9))
 end
 
----@param messages table[]
----@return string|nil
-local function derive_title(messages)
-  for _, msg in ipairs(messages) do
-    if msg.type == "user" and msg.text and msg.text ~= "" then
-      local title = msg.text:gsub("%s+", " "):sub(1, 60)
-      return title
-    end
-  end
-  return nil
-end
-
 ---@param entry { id: string, title?: string, created_at: integer, messages: table[], settings?: table }
 function M.save(entry)
   if not entry or not entry.id or not entry.messages then
@@ -41,7 +29,7 @@ function M.save(entry)
   end
   entry.updated_at = os.time()
   entry.created_at = entry.created_at or entry.updated_at
-  entry.title = derive_title(entry.messages) or entry.title or "untitled"
+  entry.title = entry.title or "untitled"
   local ok, encoded = pcall(vim.json.encode, entry)
   if not ok then
     log.error("history_store: encode failed for " .. entry.id .. ": " .. tostring(encoded))

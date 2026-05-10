@@ -129,9 +129,10 @@ local function place_marks(bufnr, file)
       pcall(api.nvim_buf_set_extmark, bufnr, ns, hint_line, 0, {
         virt_text = {
           {
-            (" [%d/%d] %sa accept · %sr reject"):format(
+            (" [%d/%d] %sa accept · %sr reject · %sm add hunk"):format(
               hi,
               #file.hunks,
+              vim.g.maplocalleader or "\\",
               vim.g.maplocalleader or "\\",
               vim.g.maplocalleader or "\\"
             ),
@@ -159,6 +160,12 @@ local function bind_keymaps(bufnr)
   vim.keymap.set("n", "[h", function()
     M.prev_hunk()
   end, vim.tbl_extend("force", opts, { desc = "0x0: prev hunk" }))
+  vim.keymap.set("n", "<localleader>m", function()
+    require("zeroxzero.chat").add_current_hunk()
+  end, vim.tbl_extend("force", opts, { desc = "0x0: add hunk to chat" }))
+  vim.keymap.set("n", "<localleader>f", function()
+    require("zeroxzero.chat").add_current_file()
+  end, vim.tbl_extend("force", opts, { desc = "0x0: add file to chat" }))
 end
 
 local function unbind_keymaps(bufnr)
@@ -166,6 +173,8 @@ local function unbind_keymaps(bufnr)
   pcall(vim.keymap.del, "n", "<localleader>r", { buffer = bufnr })
   pcall(vim.keymap.del, "n", "]h", { buffer = bufnr })
   pcall(vim.keymap.del, "n", "[h", { buffer = bufnr })
+  pcall(vim.keymap.del, "n", "<localleader>m", { buffer = bufnr })
+  pcall(vim.keymap.del, "n", "<localleader>f", { buffer = bufnr })
 end
 
 ---@param bufnr integer
@@ -304,6 +313,33 @@ local function find_hunk_at(bufnr)
     end
   end
   return nil
+end
+
+local function format_hunk(hunk)
+  local old_count = hunk.old_count or #hunk.old_lines
+  local new_count = hunk.new_count or #hunk.new_lines
+  local lines = {
+    ("@@ -%d,%d +%d,%d @@"):format(hunk.old_start or 0, old_count, hunk.new_start or 0, new_count),
+  }
+  for _, line in ipairs(hunk.old_lines or {}) do
+    lines[#lines + 1] = "-" .. line
+  end
+  for _, line in ipairs(hunk.new_lines or {}) do
+    lines[#lines + 1] = "+" .. line
+  end
+  return lines
+end
+
+function M.current_hunk_reference()
+  local state, _, hunk = find_hunk_at(api.nvim_get_current_buf())
+  if not state or not hunk or not state.file then
+    return nil
+  end
+  return {
+    path = state.file.path,
+    hunk = hunk,
+    lines = format_hunk(hunk),
+  }
 end
 
 function M.next_hunk()

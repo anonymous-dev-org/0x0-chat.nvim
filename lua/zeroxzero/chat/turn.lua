@@ -3,6 +3,8 @@
 
 local InlineDiff = require("zeroxzero.inline_diff")
 local ReferenceMentions = require("zeroxzero.reference_mentions")
+local Title = require("zeroxzero.chat.title")
+local config = require("zeroxzero.config")
 local util = require("zeroxzero.chat.util")
 
 local M = {}
@@ -124,7 +126,28 @@ function M:submit()
     return
   end
   local id = self.history:add_user(prompt, "active")
+  self:_maybe_generate_title(prompt)
   self:_submit_prompt(prompt, id)
+end
+
+---@param prompt string
+function M:_maybe_generate_title(prompt)
+  if self.title_requested or self.title_pending then
+    return
+  end
+  self.title_requested = true
+  self.title_pending = true
+  local provider_name = self.provider_name or config.current.provider
+  local cwd = self.repo_root or vim.fn.getcwd()
+  Title.generate(provider_name, cwd, prompt, function(title)
+    vim.schedule(function()
+      self.title_pending = false
+      if title and title ~= "" then
+        self.title = title
+        self:_schedule_persist()
+      end
+    end)
+  end)
 end
 
 ---@param prompt string

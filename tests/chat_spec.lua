@@ -28,6 +28,9 @@ describe("chat orchestrator", function()
       "submit",
       "cancel",
       "changes",
+      "review",
+      "add_current_file",
+      "add_current_hunk",
       "accept_all",
       "discard_all",
       "stop",
@@ -56,8 +59,8 @@ describe("chat orchestrator", function()
     M.close()
   end)
 
-  it("changes/accept_all/discard_all/diff are no-ops without an active checkpoint", function()
-    for _, name in ipairs({ "changes", "accept_all", "discard_all", "diff" }) do
+  it("changes/review/accept_all/discard_all/diff are no-ops without an active checkpoint", function()
+    for _, name in ipairs({ "changes", "review", "accept_all", "discard_all", "diff" }) do
       local ok, err = pcall(M[name])
       assert.is_true(ok, name .. " threw: " .. tostring(err))
     end

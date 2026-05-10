@@ -180,6 +180,59 @@ function M:diff(tool_call_id)
   vim.bo[bufnr].modifiable = false
 end
 
+---@param path string
+function M:_open_file_review(path)
+  if not self.checkpoint then
+    return
+  end
+  local abs = self.checkpoint.root .. "/" .. path
+  local base = Checkpoint.read_file(self.checkpoint, path) or ""
+
+  vim.cmd("tabnew")
+  local base_win = vim.api.nvim_get_current_win()
+  local base_buf = vim.api.nvim_get_current_buf()
+  vim.api.nvim_buf_set_name(base_buf, ("0x0 checkpoint: %s"):format(path))
+  vim.bo[base_buf].buftype = "nofile"
+  vim.bo[base_buf].bufhidden = "wipe"
+  vim.bo[base_buf].swapfile = false
+  vim.bo[base_buf].modifiable = true
+  vim.api.nvim_buf_set_lines(base_buf, 0, -1, false, vim.split(base, "\n", { plain = true }))
+  vim.bo[base_buf].modifiable = false
+
+  vim.cmd("vert diffsplit " .. vim.fn.fnameescape(abs))
+  local work_win = vim.api.nvim_get_current_win()
+  pcall(vim.cmd, "diffthis")
+  vim.api.nvim_set_current_win(base_win)
+  pcall(vim.cmd, "diffthis")
+  vim.api.nvim_set_current_win(work_win)
+end
+
+function M:review()
+  if not self.checkpoint then
+    vim.notify("0x0: no active checkpoint", vim.log.levels.INFO)
+    return
+  end
+  local files = Checkpoint.changed_files(self.checkpoint)
+  if #files == 0 then
+    vim.notify("0x0: no changes since checkpoint", vim.log.levels.INFO)
+    return
+  end
+  if #files == 1 then
+    self:_open_file_review(files[1])
+    return
+  end
+  vim.ui.select(files, {
+    prompt = ("0x0 review: %d changed files"):format(#files),
+    format_item = function(p)
+      return p
+    end,
+  }, function(choice)
+    if choice then
+      self:_open_file_review(choice)
+    end
+  end)
+end
+
 function M:show_changes()
   if not self.checkpoint then
     vim.notify("0x0: no active checkpoint", vim.log.levels.INFO)
@@ -210,6 +263,9 @@ function M:new_session()
   self.history:clear()
   self.widget:reset()
   self.persist_id = require("zeroxzero.history_store").new_id()
+  self.title = nil
+  self.title_requested = false
+  self.title_pending = false
   self.persist_created_at = os.time()
   self:open()
 end

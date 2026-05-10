@@ -146,6 +146,15 @@ local function tab_win_for_buf(tab_page_id, bufnr)
   return nil
 end
 
+local function disable_ambient_completion(bufnr)
+  vim.bo[bufnr].complete = ""
+  vim.bo[bufnr].completefunc = ""
+  vim.bo[bufnr].omnifunc = ""
+  vim.bo[bufnr].tagfunc = ""
+  vim.b[bufnr].cmp_enabled = false
+  vim.b[bufnr].blink_cmp_enabled = false
+end
+
 function ChatWidget:_ensure_transcript_buf()
   if buf_valid(self.transcript_buf) then
     return self.transcript_buf
@@ -176,7 +185,8 @@ function ChatWidget:_ensure_input_buf()
   vim.bo[bufnr].buftype = "nofile"
   vim.bo[bufnr].bufhidden = "hide"
   vim.bo[bufnr].swapfile = false
-  vim.bo[bufnr].filetype = "markdown"
+  vim.bo[bufnr].filetype = "zeroxzero-chat-input"
+  disable_ambient_completion(bufnr)
 
   local opts = { buffer = bufnr, nowait = true, silent = true }
   vim.keymap.set("n", "<CR>", function()
@@ -480,6 +490,10 @@ end
 
 function ChatWidget:_update_input_winbar()
   if not win_valid(self.input_win) then
+    return
+  end
+  if not config.current.show_input_hints then
+    vim.wo[self.input_win].winbar = "%#ZeroChatHintLabel# 0x0 prompt%*"
     return
   end
   local segments = {}
