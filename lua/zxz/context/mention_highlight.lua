@@ -16,8 +16,26 @@ local augroup_prefix = "zxz_mention_hl_"
 pcall(api.nvim_set_hl, 0, "ZxzChatMentionResolved", { default = true, link = "Special" })
 pcall(api.nvim_set_hl, 0, "ZxzChatMentionInvalid", { default = true, link = "DiagnosticError" })
 
--- bufnr -> { cwd, on_update, augroup, pending }
+-- bufnr -> { cwd, on_update, augroup, pending, last_text, last_summary }
 local state = {}
+
+local function summaries_equal(a, b)
+  if not a or not b then
+    return false
+  end
+  if a.total ~= b.total then
+    return false
+  end
+  if #(a.paths or {}) ~= #(b.paths or {}) then
+    return false
+  end
+  for i = 1, #a.paths do
+    if a.paths[i] ~= b.paths[i] then
+      return false
+    end
+  end
+  return true
+end
 
 local function recompute(bufnr, cwd, on_update)
   if not api.nvim_buf_is_valid(bufnr) then
@@ -25,6 +43,31 @@ local function recompute(bufnr, cwd, on_update)
   end
   local lines = api.nvim_buf_get_lines(bufnr, 0, -1, false)
   local text = table.concat(lines, "\n")
+
+  -- Fast-path: when the buffer hasn't changed since the last recompute,
+  -- skip everything. (TextChangedI can fire for whitespace/cursor edits.)
+  local s = state[bufnr]
+  if s and s.last_text == text then
+    return
+  end
+
+  -- Fast-path: buffer contains no '@' anywhere → no mentions to mark.
+  -- Just clear extmarks once, emit an empty summary on transition, return.
+  if not text:find("@", 1, true) then
+    api.nvim_buf_clear_namespace(bufnr, ns, 0, -1)
+    local empty = { paths = {}, total = 0 }
+    if s then
+      s.last_text = text
+      if on_update and not summaries_equal(s.last_summary, empty) then
+        s.last_summary = empty
+        on_update(empty)
+      else
+        s.last_summary = empty
+      end
+    end
+    return
+  end
+
   local mentions = ReferenceMentions.parse(text, cwd)
 
   -- Line/col offsets for each newline so we can map a byte offset in `text`
@@ -102,8 +145,17 @@ local function recompute(bufnr, cwd, on_update)
     end
   end
 
-  if on_update then
-    on_update({ paths = labels, total = #labels })
+  local summary = { paths = labels, total = #labels }
+  if s then
+    s.last_text = text
+    if on_update and not summaries_equal(s.last_summary, summary) then
+      s.last_summary = summary
+      on_update(summary)
+    else
+      s.last_summary = summary
+    end
+  elseif on_update then
+    on_update(summary)
   end
 end
 
@@ -132,7 +184,14 @@ function M.attach(bufnr, cwd, on_update)
     return
   end
   local augroup = api.nvim_create_augroup(augroup_prefix .. bufnr, { clear = true })
-  state[bufnr] = { cwd = cwd, on_update = on_update, augroup = augroup, pending = false }
+  state[bufnr] = {
+    cwd = cwd,
+    on_update = on_update,
+    augroup = augroup,
+    pending = false,
+    last_text = nil,
+    last_summary = nil,
+  }
 
   api.nvim_create_autocmd({ "TextChanged", "TextChangedI", "TextChangedP" }, {
     group = augroup,

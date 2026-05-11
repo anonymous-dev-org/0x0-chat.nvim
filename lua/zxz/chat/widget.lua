@@ -635,7 +635,10 @@ function ChatWidget:_update_winbar()
       elapsed_label
     )
   end
-  vim.wo[self.transcript_win].winbar = table.concat(segments, " │ ")
+  local next_winbar = table.concat(segments, " │ ")
+  if vim.wo[self.transcript_win].winbar ~= next_winbar then
+    vim.wo[self.transcript_win].winbar = next_winbar
+  end
 end
 
 function ChatWidget:_update_input_winbar()
@@ -663,11 +666,17 @@ function ChatWidget:_update_input_winbar()
     end
     right = "%#ZxzChatHintLabel#" .. label .. "%* "
   end
+  local next_winbar
   if left == "" and right == "" then
-    vim.wo[self.input_win].winbar = ""
-    return
+    next_winbar = ""
+  else
+    next_winbar = left .. "%=" .. right
   end
-  vim.wo[self.input_win].winbar = left .. "%=" .. right
+  -- Avoid redraws when nothing changed — setting winbar always invalidates
+  -- the window, which flickers during fast typing.
+  if vim.wo[self.input_win].winbar ~= next_winbar then
+    vim.wo[self.input_win].winbar = next_winbar
+  end
 end
 
 local function format_tool_line(tool)
