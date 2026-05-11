@@ -24,11 +24,15 @@ describe("chat orchestrator", function()
       "toggle",
       "add_selection",
       "history_picker",
+      "runs_picker",
       "new",
       "submit",
       "cancel",
       "changes",
       "review",
+      "run_review",
+      "run_accept",
+      "run_reject",
       "add_current_file",
       "add_current_hunk",
       "accept_all",
@@ -49,6 +53,15 @@ describe("chat orchestrator", function()
   it("current_settings runs without raising (mixin wired correctly)", function()
     local ok, err = pcall(M.current_settings)
     assert.is_true(ok, tostring(err))
+  end)
+
+  it("registers the run review commands", function()
+    require("zeroxzero").setup()
+    local commands = vim.api.nvim_get_commands({})
+    assert.is_truthy(commands.ZeroChatRuns)
+    assert.is_truthy(commands.ZeroChatRunReview)
+    assert.is_truthy(commands.ZeroChatRunAccept)
+    assert.is_truthy(commands.ZeroChatRunReject)
   end)
 
   it("submit on an empty input only warns, does not throw", function()

@@ -21,6 +21,7 @@ function M:_persist_now()
     title = self.title,
     created_at = self.persist_created_at,
     messages = self.history.messages,
+    run_ids = self.run_ids or {},
     settings = {
       provider = self.provider_name,
       model = self.model,
@@ -45,6 +46,7 @@ function M:load_thread(id)
     end
   end
   self.persist_id = entry.id
+  self.run_ids = entry.run_ids or {}
   self.title = entry.title
   self.title_requested = entry.title and entry.title ~= "" and entry.title ~= "untitled"
   self.title_pending = false

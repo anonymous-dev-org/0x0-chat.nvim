@@ -68,11 +68,34 @@ local function is_supported_path(path)
   return not path:find("[%s`]")
 end
 
+local SPECIAL_MENTIONS = {
+  { label = "@diagnostics", path = "diagnostics" },
+  { label = "@diagnostics:errors", path = "diagnostics" },
+  { label = "@diagnostics:warnings", path = "diagnostics" },
+  { label = "@hover", path = "hover" },
+  { label = "@def", path = "def" },
+  { label = "@symbol", path = "symbol" },
+  { label = "@recent", path = "recent" },
+  { label = "@repomap", path = "repomap" },
+  { label = "@test-output", path = "test-output" },
+}
+
 local function matches_for_token(token)
   token = token or ""
   local lower = token:lower()
   local prefix = {}
   local contains = {}
+  -- Inject special mentions ahead of file matches when the token shape suggests one.
+  for _, item in ipairs(SPECIAL_MENTIONS) do
+    local label_lower = item.label:sub(2):lower()
+    if lower == "" then
+      table.insert(prefix, item)
+    elseif label_lower:sub(1, #lower) == lower then
+      table.insert(prefix, item)
+    elseif label_lower:find(lower, 1, true) then
+      table.insert(contains, item)
+    end
+  end
   for _, file in ipairs(list_files()) do
     if is_supported_path(file) then
       local file_lower = file:lower()

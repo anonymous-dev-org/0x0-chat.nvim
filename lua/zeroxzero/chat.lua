@@ -5,6 +5,7 @@
 local config = require("zeroxzero.config")
 local History = require("zeroxzero.history")
 local HistoryStore = require("zeroxzero.history_store")
+local RunsStore = require("zeroxzero.runs_store")
 local ChatWidget = require("zeroxzero.chat_widget")
 local Checkpoint = require("zeroxzero.checkpoint")
 local InlineDiff = require("zeroxzero.inline_diff")
@@ -31,6 +32,8 @@ local api = vim.api
 ---@field title string|nil
 ---@field title_requested boolean
 ---@field title_pending boolean
+---@field current_run table|nil
+---@field run_ids string[]
 local Chat = {}
 Chat.__index = Chat
 
@@ -46,6 +49,11 @@ mixin(Chat, require("zeroxzero.chat.permissions"))
 mixin(Chat, require("zeroxzero.chat.fs_bridge"))
 mixin(Chat, require("zeroxzero.chat.persistence"))
 mixin(Chat, require("zeroxzero.chat.checkpoints"))
+mixin(Chat, require("zeroxzero.chat.runs"))
+mixin(Chat, require("zeroxzero.chat.run_review"))
+mixin(Chat, require("zeroxzero.chat.run_actions"))
+mixin(Chat, require("zeroxzero.chat.run_timeline"))
+mixin(Chat, require("zeroxzero.chat.ephemeral"))
 
 ---@param tab_page_id integer
 ---@return zeroxzero.Chat
@@ -72,17 +80,36 @@ function Chat.new(tab_page_id)
     title_pending = false,
     persist_created_at = os.time(),
     persist_timer = nil,
+    current_run = nil,
+    run_ids = {},
+    permission_queue = {},
   }, Chat)
   self.widget = ChatWidget.new(tab_page_id, self.history, function()
     self:submit()
   end, function()
     self:cancel()
   end, function()
-    return {
+    local info = {
       provider = self.provider_name or config.current.provider,
       model = self.model,
       mode = self.mode,
     }
+    if self.current_run and self.in_flight then
+      local tool_count = #(self.current_run.tool_calls or {})
+      local files = 0
+      if self.checkpoint then
+        local ok, list = pcall(Checkpoint.changed_files, self.checkpoint)
+        if ok and type(list) == "table" then
+          files = #list
+        end
+      end
+      info.run = {
+        tool_count = tool_count,
+        files = files,
+        elapsed = os.time() - (self.current_run.started_at or os.time()),
+      }
+    end
+    return info
   end)
   return self
 end
@@ -355,8 +382,73 @@ function M.new()
   for_current_tab():new_session()
 end
 
+local STATUS_ICON = {
+  completed = "✓",
+  cancelled = "⊘",
+  failed = "✗",
+  running = "…",
+  accepted = "★",
+  rejected = "✗",
+}
+
+---@param current_thread_only boolean
+function M.runs_picker(current_thread_only)
+  local chat = for_current_tab()
+  local runs
+  if current_thread_only then
+    runs = RunsStore.list_for_thread(chat.persist_id)
+  else
+    runs = RunsStore.list()
+  end
+  if #runs == 0 then
+    vim.notify("0x0: no runs recorded", vim.log.levels.INFO)
+    return
+  end
+  vim.ui.select(runs, {
+    prompt = current_thread_only and "0x0 runs (this thread)" or "0x0 runs",
+    format_item = function(run)
+      local when = os.date("%Y-%m-%d %H:%M", run.started_at or 0)
+      local icon = STATUS_ICON[run.status or ""] or "·"
+      local agent = run.agent or {}
+      local model = agent.model or agent.provider or "?"
+      local files = #(run.files_touched or {})
+      local conflicts = #(run.conflicts or {})
+      local summary = run.prompt_summary or ""
+      if #summary > 60 then
+        summary = summary:sub(1, 57) .. "..."
+      end
+      local conflict_tag = conflicts > 0 and (" ⚠%d"):format(conflicts) or ""
+      return ("%s %s  %-18s  %d file%s%s  %s"):format(
+        icon,
+        when,
+        model,
+        files,
+        files == 1 and " " or "s",
+        conflict_tag,
+        summary
+      )
+    end,
+  }, function(choice)
+    if not choice then
+      return
+    end
+    for_current_tab():run_review(choice.run_id)
+  end)
+end
+
 function M.submit()
   for_current_tab():submit()
+end
+
+---@param prompt string
+function M.run_headless(prompt)
+  for_current_tab():submit_prompt(prompt, { headless = true })
+end
+
+---@param opts { prompt_blocks: table[], on_chunk: fun(text), on_done: fun(err) }
+---@return fun() cancel
+function M.run_inline_ask(opts)
+  return for_current_tab():run_inline_ask(opts)
 end
 
 function M.cancel()
@@ -386,6 +478,26 @@ end
 ---@param tool_call_id? string
 function M.diff(tool_call_id)
   for_current_tab():diff(tool_call_id)
+end
+
+---@param run_id? string
+function M.run_review(run_id)
+  for_current_tab():run_review(run_id)
+end
+
+---@param run_id? string
+function M.run_accept(run_id)
+  for_current_tab():run_accept(run_id)
+end
+
+---@param run_id? string
+function M.run_reject(run_id)
+  for_current_tab():run_reject(run_id)
+end
+
+---@param run_id? string
+function M.run_timeline(run_id)
+  for_current_tab():run_timeline(run_id)
 end
 
 function M.accept_all()

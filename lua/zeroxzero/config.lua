@@ -58,12 +58,41 @@ M.defaults = {
   initialize_retries = 3,
   checkpoint_keep_n = 20,
   reconcile = "strict",
-  tool_policy = { auto_approve = { "read" } },
+  tool_policy = {
+    auto_approve = { "read" },
+    -- Path globs (lua patterns) for which write/shell get auto-approved.
+    -- Matched against rawInput.file_path / path / filePath when present.
+    auto_approve_paths = {},
+    -- Path globs that always force the gating prompt, even for classes in
+    -- auto_approve. Wins over auto_approve_paths.
+    deny_paths = {},
+  },
+  repo_map = {
+    budget_bytes = 50 * 1024,
+  },
+  auto_prelude = {
+    cursor = false,
+    repo_map = false,
+    recent = false,
+  },
+  code_actions = {},
+  detached_runs_max = 4,
+  test_command = nil, -- auto-detected per project; override per-setup if needed
+  test_command_timeout_ms = 5000, -- @test-output kill-on-timeout (T2.1, T2.7)
+  context = {
+    summarize_threshold = 8 * 1024, -- bare @path of files larger than this emits a summary
+  },
   tool_output_max_lines = 200,
   providers = {
     ["claude-acp"] = {
       name = "Claude ACP",
-      command = "claude-code-acp",
+      command = (function()
+        local local_bin = vim.fn.stdpath("data") .. "/0x0/claude-agent-server/bin/run"
+        if vim.fn.executable(local_bin) == 1 then
+          return local_bin
+        end
+        return "claude-code-acp"
+      end)(),
       models = { "claude-opus-4-7", "claude-sonnet-4-6", "claude-haiku-4-5" },
       ignore_stderr_patterns = DEFAULT_STDERR_PATTERNS["claude-acp"],
     },

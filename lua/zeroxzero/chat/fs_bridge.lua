@@ -6,22 +6,31 @@ local InlineDiff = require("zeroxzero.inline_diff")
 
 local M = {}
 
----Resolve an ACP-supplied path to an absolute filesystem path. ACP paths are
----meant to be absolute, but be defensive: relative paths are joined onto the
----repo root so we never read/write something outside the project.
----@param path string
+---Standalone resolver: ACP-supplied path → absolute path. Relative paths
+---are joined onto repo_root so we never read/write outside the project.
+---Exposed for reuse by run_registry's detached fs handlers (T1.11).
+---@param repo_root string|nil
+---@param path string|nil
 ---@return string|nil
-function M:_resolve_acp_path(path)
+function M.resolve_path(repo_root, path)
   if type(path) ~= "string" or path == "" then
     return nil
   end
   if path:sub(1, 1) == "/" then
     return path
   end
-  if self.repo_root then
-    return self.repo_root .. "/" .. path
+  if repo_root and repo_root ~= "" then
+    return repo_root .. "/" .. path
   end
   return nil
+end
+
+---Resolve an ACP-supplied path to an absolute filesystem path. ACP paths
+---are meant to be absolute, but be defensive.
+---@param path string
+---@return string|nil
+function M:_resolve_acp_path(path)
+  return M.resolve_path(self.repo_root, path)
 end
 
 function M:_handle_fs_read(params, respond)
@@ -57,6 +66,15 @@ function M:_handle_fs_write(params, respond)
     end
     local ok, werr = self.reconcile:write_for_agent(abs, params.content or "")
     if not ok then
+      self:_run_record_conflict(params.path or abs, werr or "write rejected")
+      self.history:add({
+        type = "activity",
+        status = "failed",
+        text = ("reconcile conflict on `%s` — user edited since the agent's last read"):format(
+          vim.fn.fnamemodify(abs, ":~:.")
+        ),
+      })
+      self:_render()
       respond({ code = -32000, message = werr or "write rejected" })
       return
     end

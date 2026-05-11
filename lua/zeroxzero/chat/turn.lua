@@ -37,6 +37,7 @@ function M:_handle_update(update)
       content = update.content,
       locations = update.locations,
     })
+    self:_run_append_tool_call(update.toolCallId, update)
     self:_render()
   elseif kind == "tool_call_update" then
     if not update.toolCallId then
@@ -51,10 +52,14 @@ function M:_handle_update(update)
     end
     local patch = util.tool_patch(update)
     self.history:update_tool_call(update.toolCallId, patch)
+    self:_run_update_tool_call(update.toolCallId, patch)
     if update.status == "completed" and self.checkpoint then
       local tool_call_id = update.toolCallId
       vim.schedule(function()
         self:_snapshot_for_tool(tool_call_id)
+        if self.tool_checkpoints and self.tool_checkpoints[tool_call_id] then
+          self:_run_record_tool_ref(tool_call_id, self.tool_checkpoints[tool_call_id])
+        end
         InlineDiff.refresh_all(self.checkpoint)
       end)
     end
@@ -174,14 +179,34 @@ function M:_submit_prompt(prompt, user_id, retried_session)
         self.widget:render()
         self.in_flight = false
         self.response_started = false
+        self:_finalize_run("failed")
         self:_notify_or_continue()
       end)
       return
     end
+    if not retried_session then
+      self:_start_run(prompt)
+    end
     self:_set_turn_activity("waiting", "Working")
-    client:prompt(session_id, ReferenceMentions.to_prompt_blocks(prompt, self:_session_cwd()), function(result, err)
+    local prompt_blocks = ReferenceMentions.to_prompt_blocks(prompt, self:_session_cwd())
+    do
+      local prelude_text =
+        require("zeroxzero.context.auto_prelude").build(config.current.auto_prelude, self:_session_cwd())
+      if prelude_text then
+        table.insert(prompt_blocks, 1, { type = "text", text = prelude_text })
+      end
+    end
+    client:prompt(session_id, prompt_blocks, function(result, err)
       vim.schedule(function()
         if self.client ~= client or self.session_id ~= session_id then
+          -- T2.8: stale callback from a previous session. If a Run was
+          -- still attached to this prompt callback, finalize it so the
+          -- record doesn't sit in `running` forever.
+          if self.current_run then
+            pcall(function()
+              self:_finalize_run("cancelled")
+            end)
+          end
           return
         end
         local was_cancelled = self.cancel_requested or util.is_cancel_result(result)
@@ -212,7 +237,14 @@ function M:_submit_prompt(prompt, user_id, retried_session)
         self.widget:render()
         self.in_flight = false
         self.response_started = false
+        local run_status = "completed"
+        if was_cancelled then
+          run_status = "cancelled"
+        elseif err then
+          run_status = "failed"
+        end
         self.cancel_requested = false
+        self:_finalize_run(run_status)
         self:_notify_or_continue()
       end)
     end)
@@ -226,6 +258,49 @@ function M:_notify_or_continue()
     return
   end
   util.notify_user("ZeroChatTurnEnd")
+  if self.headless then
+    self.headless = false
+    local last_run_id = (self.run_ids or {})[#(self.run_ids or {})]
+    local files = 0
+    if last_run_id then
+      local run = require("zeroxzero.runs_store").load(last_run_id)
+      if run then
+        files = #(run.files_touched or {})
+      end
+    end
+    vim.notify(
+      ("0x0 headless run finished — %d file%s changed. :ZeroChatRunReview %s"):format(
+        files,
+        files == 1 and "" or "s",
+        last_run_id or ""
+      ),
+      vim.log.levels.INFO
+    )
+  end
+end
+
+---Submit a prompt programmatically (no input buffer read). Used by
+---:ZeroChatRun for headless runs.
+---@param prompt string
+---@param opts? { headless?: boolean }
+function M:submit_prompt(prompt, opts)
+  opts = opts or {}
+  prompt = type(prompt) == "string" and vim.trim(prompt) or ""
+  if prompt == "" then
+    vim.notify("0x0: empty prompt", vim.log.levels.WARN)
+    return
+  end
+  if opts.headless then
+    self.headless = true
+  end
+  if self.in_flight then
+    local id = self.history:add_user(prompt, "queued")
+    table.insert(self.queued_prompts, { id = id, text = prompt })
+    return
+  end
+  local id = self.history:add_user(prompt, "active")
+  self:_maybe_generate_title(prompt)
+  self:_submit_prompt(prompt, id)
 end
 
 function M:cancel()

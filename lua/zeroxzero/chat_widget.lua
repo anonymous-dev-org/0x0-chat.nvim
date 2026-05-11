@@ -520,6 +520,7 @@ function ChatWidget:_ensure_activity_timer()
       end
       self.activity_frame = (self.activity_frame % #ACTIVITY_SPINNER) + 1
       self:_render_activity()
+      self:_update_winbar()
     end)
   )
   pcall(function()
@@ -595,6 +596,23 @@ function ChatWidget:_update_winbar()
       #attached == 1 and "" or "s",
       hunks,
       hunks == 1 and "" or "s"
+    )
+  end
+  if info.run then
+    local r = info.run
+    local elapsed = r.elapsed or 0
+    local elapsed_label
+    if elapsed >= 60 then
+      elapsed_label = ("%dm%02ds"):format(math.floor(elapsed / 60), elapsed % 60)
+    else
+      elapsed_label = ("%ds"):format(elapsed)
+    end
+    segments[#segments + 1] = ("%%#ZeroChatHeaderStateWaiting#run: %d tool%s · %d file%s · %s%%*"):format(
+      r.tool_count or 0,
+      (r.tool_count or 0) == 1 and "" or "s",
+      r.files or 0,
+      (r.files or 0) == 1 and "" or "s",
+      elapsed_label
     )
   end
   vim.wo[self.transcript_win].winbar = table.concat(segments, " │ ")

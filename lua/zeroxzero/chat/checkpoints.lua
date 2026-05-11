@@ -518,6 +518,8 @@ function M:new_session()
   self.title_requested = false
   self.title_pending = false
   self.persist_created_at = os.time()
+  self.run_ids = {}
+  self.current_run = nil
   self:open()
 end
 
@@ -540,8 +542,17 @@ function M:_reset_session()
   self.response_started = false
   self.cancel_requested = false
   self.queued_prompts = {}
+  if self.permission_queue then
+    for _, entry in ipairs(self.permission_queue) do
+      pcall(entry.respond, "reject_once")
+    end
+    self.permission_queue = {}
+  end
   self:_set_activity(nil)
   self.config_options = {}
+  if self.current_run then
+    self:_finalize_run("cancelled")
+  end
   self:_clear_checkpoint()
 end
 

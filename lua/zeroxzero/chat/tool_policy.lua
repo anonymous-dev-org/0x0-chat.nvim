@@ -28,6 +28,31 @@ function M.classify(tool_call)
   return KIND_TO_CLASS[kind] or "unknown"
 end
 
+---@param tool_call table
+---@return string|nil
+local function tool_call_path(tool_call)
+  local raw = tool_call and tool_call.rawInput
+  if type(raw) ~= "table" then
+    return nil
+  end
+  return raw.file_path or raw.path or raw.filePath
+end
+
+---@param path string|nil
+---@param patterns string[]|nil
+---@return boolean
+local function any_match(path, patterns)
+  if not path or not patterns then
+    return false
+  end
+  for _, pat in ipairs(patterns) do
+    if path:match(pat) then
+      return true
+    end
+  end
+  return false
+end
+
 ---@param class string
 ---@return boolean
 function M.is_auto_approve(class)
@@ -39,6 +64,23 @@ function M.is_auto_approve(class)
     end
   end
   return false
+end
+
+---Decide whether a tool call gets auto-approved, considering class AND path.
+---deny_paths beats auto_approve_paths beats class membership.
+---@param tool_call table
+---@param class string
+---@return boolean auto_approve
+function M.decide(tool_call, class)
+  local policy = config.current.tool_policy or {}
+  local path = tool_call_path(tool_call)
+  if any_match(path, policy.deny_paths) then
+    return false
+  end
+  if any_match(path, policy.auto_approve_paths) then
+    return true
+  end
+  return M.is_auto_approve(class)
 end
 
 ---@param class string
