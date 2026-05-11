@@ -98,21 +98,8 @@ function M._on_text_changed()
     end
   end
 
-  -- Try cache shift first (instant, no server call)
-  if cfg.cache.enabled and _last_cache_key and #before > 0 then
-    local typed = before:sub(-1)
-    local shifted = cache.try_shift(_last_cache_key, typed)
-    if shifted then
-      ghost.show(bufnr, row - 1, col, shifted)
-      -- Update cache key for next shift
-      local ctx = context.gather()
-      _last_cache_key = cache.make_key(ctx.prefix, ctx.suffix, ctx.language)
-      cache.set(_last_cache_key, shifted)
-      return
-    end
-  end
-
-  -- Cancel any pending request
+  -- Any keystroke implicitly dismisses the current ghost; a fresh request
+  -- is debounced below.
   M._cancel()
 
   -- Debounce the completion request
@@ -218,16 +205,6 @@ function M.accept()
       cache.log_outcome("accept", _last_cache_key)
     end
     return ghost.accept()
-  end
-  return false
-end
-
---- Accept only the first line of the completion.
----@return boolean
-function M.accept_line()
-  if ghost.is_visible() then
-    M._cancel_request_only()
-    return ghost.accept_line()
   end
   return false
 end
@@ -342,14 +319,6 @@ function M._setup_keymaps()
         fall_through(km.accept)
       end
     end, { silent = true, desc = "0x0: Accept completion" })
-  end
-
-  if km.accept_line and km.accept_line ~= "" then
-    vim.keymap.set("i", km.accept_line, function()
-      if not M.accept_line() then
-        fall_through(km.accept_line)
-      end
-    end, { silent = true, desc = "0x0: Accept first line" })
   end
 
   if km.dismiss and km.dismiss ~= "" then

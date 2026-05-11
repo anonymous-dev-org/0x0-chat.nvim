@@ -92,7 +92,6 @@ M.defaults = {
     suppress_in_strings_and_comments = true,
     keymaps = {
       accept = "<Tab>",
-      accept_line = "<C-e>",
       dismiss = "<C-]>",
     },
     filetypes = {

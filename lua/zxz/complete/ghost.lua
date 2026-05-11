@@ -33,8 +33,8 @@ function M.show(bufnr, row, col, text)
   setup_highlights()
   M.clear()
 
-  local lines = vim.split(text, "\n", { plain = true })
-  if #lines == 0 then
+  local first_line = vim.split(text, "\n", { plain = true })[1] or ""
+  if first_line == "" then
     return
   end
 
@@ -42,33 +42,15 @@ function M.show(bufnr, row, col, text)
     bufnr = bufnr,
     row = row,
     col = col,
-    text = text,
+    text = first_line,
     extmark_ids = {},
   }
 
-  -- First line: inline virtual text after cursor
-  local first_line = lines[1]
-  local virt_text = { { first_line, "ZxzCompleteGhost" } }
-
-  -- Multi-line: remaining lines as virt_lines below
-  local virt_lines = nil
-  if #lines > 1 then
-    virt_lines = {}
-    for i = 2, #lines do
-      table.insert(virt_lines, { { lines[i], "ZxzCompleteGhost" } })
-    end
-  end
-
-  local extmark_opts = {
-    virt_text = virt_text,
+  local ok, id = pcall(vim.api.nvim_buf_set_extmark, bufnr, ns, row, col, {
+    virt_text = { { first_line, "ZxzCompleteGhost" } },
     virt_text_pos = "inline",
     priority = 1000,
-  }
-  if virt_lines then
-    extmark_opts.virt_lines = virt_lines
-  end
-
-  local ok, id = pcall(vim.api.nvim_buf_set_extmark, bufnr, ns, row, col, extmark_opts)
+  })
   if ok then
     table.insert(_state.extmark_ids, id)
   end
@@ -105,41 +87,8 @@ function M.accept()
 
   M.clear()
 
-  local lines = vim.split(text, "\n", { plain = true })
-  vim.api.nvim_buf_set_text(bufnr, row, col, row, col, lines)
-
-  -- Move cursor to end of inserted text
-  local new_row = row + #lines - 1
-  local new_col
-  if #lines == 1 then
-    new_col = col + #lines[1]
-  else
-    new_col = #lines[#lines]
-  end
-  vim.api.nvim_win_set_cursor(0, { new_row + 1, new_col })
-
-  return true
-end
-
---- Accept only the first line of the ghost text.
----@return boolean true if text was accepted
-function M.accept_line()
-  if not _state then
-    return false
-  end
-
-  local bufnr = _state.bufnr
-  local row = _state.row
-  local col = _state.col
-  local text = _state.text
-
-  local lines = vim.split(text, "\n", { plain = true })
-  local first_line = lines[1] or ""
-
-  M.clear()
-
-  vim.api.nvim_buf_set_text(bufnr, row, col, row, col, { first_line })
-  vim.api.nvim_win_set_cursor(0, { row + 1, col + #first_line })
+  vim.api.nvim_buf_set_text(bufnr, row, col, row, col, { text })
+  vim.api.nvim_win_set_cursor(0, { row + 1, col + #text })
 
   return true
 end

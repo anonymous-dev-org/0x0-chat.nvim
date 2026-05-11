@@ -113,27 +113,6 @@ function M.set(key, completion)
   end
 end
 
---- Try to shift a cached completion by matching a typed character.
---- If the cached completion starts with the character, return the rest.
----@param old_key string Previous cache key
----@param typed_char string The character the user just typed
----@return string? shifted_completion The remaining completion text, or nil
-function M.try_shift(old_key, typed_char)
-  local completion = M.get(old_key)
-  if not completion then
-    return nil
-  end
-
-  if completion:sub(1, #typed_char) == typed_char then
-    local shifted = completion:sub(#typed_char + 1)
-    if shifted ~= "" then
-      return shifted
-    end
-  end
-
-  return nil
-end
-
 --- Clear all cached entries.
 function M.clear()
   _entries = {}
