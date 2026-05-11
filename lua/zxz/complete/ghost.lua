@@ -20,12 +20,24 @@ local function setup_highlights()
   vim.api.nvim_set_hl(0, "ZxzCompleteGhost", { link = "Comment", default = true })
 end
 
+--- Strip control characters and unwrap markdown code fences. The provider
+--- occasionally streams ASCII control bytes (which render as `^N` etc. in
+--- inline virtual text) or wraps the completion in ``` fences.
+---@param text string
+---@return string
+local function sanitize(text)
+  text = text:gsub("^%s*```[%w_-]*\n?", ""):gsub("\n?```%s*$", "")
+  text = text:gsub("[%z\1-\8\11\12\14-\31\127]", "")
+  return text
+end
+
 --- Show ghost text at the current cursor position.
 ---@param bufnr integer
 ---@param row integer 0-based
 ---@param col integer 0-based
 ---@param text string The completion text to display
 function M.show(bufnr, row, col, text)
+  text = sanitize(text)
   if text == "" then
     return
   end
