@@ -12,7 +12,6 @@ local M = {}
 ---@field provider string
 ---@field width number
 ---@field input_height integer
----@field show_input_hints boolean
 ---@field title_model string|table<string, string>|nil
 ---@field sound string|false  one of: false / "off" / "bell" / "notification" / absolute path
 ---@field request_timeout_ms integer  per-request ACP timeout (cancelled with timeout error after)
@@ -45,7 +44,6 @@ M.defaults = {
   provider = "claude-acp",
   width = 0.4,
   input_height = 8,
-  show_input_hints = false,
   title_model = {
     ["claude-acp"] = "claude-haiku-4-5",
     ["claude-agent-acp"] = "claude-haiku-4-5",
@@ -58,6 +56,53 @@ M.defaults = {
   initialize_retries = 3,
   checkpoint_keep_n = 20,
   reconcile = "strict",
+  profile = "write",
+  default_profile = "write",
+  profiles = {
+    ask = {
+      name = "Ask",
+      description = "Read-only codebase inspection.",
+      tool_policy = {
+        auto_approve = { "read" },
+        deny = { "write", "shell" },
+        auto_approve_paths = {},
+        deny_paths = {},
+      },
+    },
+    write = {
+      name = "Write",
+      description = "Edit files with approval gates for risky actions.",
+      tool_policy = {
+        auto_approve = { "read" },
+        auto_approve_paths = {},
+        deny_paths = {},
+      },
+    },
+    review = {
+      name = "Review",
+      description = "Inspect diffs, diagnostics, tests, and risks.",
+      tool_policy = {
+        auto_approve = { "read" },
+        deny = { "write", "shell" },
+        auto_approve_paths = {},
+        deny_paths = {},
+      },
+    },
+    autonomous = {
+      name = "Autonomous",
+      description = "Long-running codebase work with explicit review.",
+      tool_policy = {
+        auto_approve = { "read" },
+        auto_approve_paths = {},
+        deny_paths = {},
+      },
+    },
+  },
+  favorite_models = {},
+  thinking = {
+    enabled = nil,
+    effort = nil,
+  },
   tool_policy = {
     auto_approve = { "read" },
     -- Path globs (lua patterns) for which write/shell get auto-approved.
@@ -69,6 +114,9 @@ M.defaults = {
   },
   repo_map = {
     budget_bytes = 50 * 1024,
+  },
+  rules = {
+    paths = { ".0x0/rules.md", ".zed/rules.md", "AGENTS.md" },
   },
   auto_prelude = {
     cursor = false,
@@ -150,6 +198,11 @@ M.current = vim.deepcopy(M.defaults)
 ---@param opts? table
 function M.setup(opts)
   M.current = vim.tbl_deep_extend("force", vim.deepcopy(M.defaults), opts or {})
+  M.current.profile = M.current.profile or M.current.default_profile
+  local profile = M.current.profiles and M.current.profiles[M.current.profile]
+  if profile and profile.tool_policy and not (opts and opts.tool_policy) then
+    M.current.tool_policy = vim.tbl_deep_extend("force", vim.deepcopy(M.current.tool_policy or {}), profile.tool_policy)
+  end
 end
 
 ---@param name? string

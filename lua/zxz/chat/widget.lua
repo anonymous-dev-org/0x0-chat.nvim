@@ -1,6 +1,5 @@
 local config = require("zxz.core.config")
 local file_completion = require("zxz.context.file_completion")
-local InlineDiff = require("zxz.edit.inline_diff")
 local Line = require("zxz.chat.line")
 local mention_highlight = require("zxz.context.mention_highlight")
 local tool_policy = require("zxz.chat.tool_policy")
@@ -45,13 +44,6 @@ local KEY_TO_KIND = {
   R = "reject_always",
 }
 
-local INPUT_HINTS = {
-  { "<CR>", "submit" },
-  { "<lc>c", "cancel" },
-  { "<lc>d", "review" },
-  { "@", "files" },
-}
-
 ---@class zxz.ChatWidget
 ---@field tab_page_id integer
 ---@field history zxz.History
@@ -80,15 +72,13 @@ ChatWidget.__index = ChatWidget
 ---@param history zxz.History
 ---@param on_submit fun()
 ---@param on_cancel fun()
----@param header_info? fun(): table
 ---@return zxz.ChatWidget
-function ChatWidget.new(tab_page_id, history, on_submit, on_cancel, header_info)
+function ChatWidget.new(tab_page_id, history, on_submit, on_cancel)
   return setmetatable({
     tab_page_id = tab_page_id,
     history = history,
     on_submit = on_submit,
     on_cancel = on_cancel,
-    header_info = header_info,
     transcript_buf = nil,
     input_buf = nil,
     transcript_win = nil,
@@ -129,15 +119,8 @@ local HIGHLIGHTS = {
   ZxzChatStatusInProgress = "DiagnosticVirtualTextInfo",
   ZxzChatStatusCompleted = "DiagnosticVirtualTextOk",
   ZxzChatStatusFailed = "DiagnosticVirtualTextError",
-  ZxzChatHeader = "Title",
-  ZxzChatHeaderProvider = "Type",
-  ZxzChatHeaderModel = "Identifier",
-  ZxzChatHeaderMode = "Constant",
   ZxzChatHeaderStateWaiting = "DiagnosticVirtualTextWarn",
   ZxzChatHeaderStateResponding = "DiagnosticVirtualTextInfo",
-  ZxzChatHeaderStateIdle = "Comment",
-  ZxzChatHintKey = "Special",
-  ZxzChatHintLabel = "Comment",
 }
 
 for name, link in pairs(HIGHLIGHTS) do
@@ -315,16 +298,8 @@ function ChatWidget:_ensure_input_buf()
 
   self.input_buf = bufnr
   file_completion.attach(bufnr)
-  self.mention_summary = { paths = {}, total = 0 }
-  mention_highlight.attach(bufnr, vim.fn.getcwd(), function(summary)
-    self.mention_summary = summary
-    self:_update_input_winbar()
-  end)
-  InlineDiff.on_change(function()
-    vim.schedule(function()
-      self:_update_winbar()
-    end)
-  end)
+  -- Highlight mentions inline; no surface notification (no winbar to feed).
+  mention_highlight.attach(bufnr, vim.fn.getcwd(), nil)
   return bufnr
 end
 
@@ -351,6 +326,7 @@ function ChatWidget:open()
     vim.wo[self.transcript_win].number = false
     vim.wo[self.transcript_win].relativenumber = false
     vim.wo[self.transcript_win].signcolumn = "no"
+    vim.wo[self.transcript_win].winbar = ""
     pcall(function()
       vim.wo[self.transcript_win].foldmethod = "expr"
       vim.wo[self.transcript_win].foldexpr = "v:lua.vim.treesitter.foldexpr()"
@@ -371,14 +347,12 @@ function ChatWidget:open()
     vim.wo[self.input_win].number = false
     vim.wo[self.input_win].relativenumber = false
     vim.wo[self.input_win].signcolumn = "no"
+    vim.wo[self.input_win].winbar = ""
   end
 
   if win_valid(self.input_win) then
     api.nvim_set_current_win(self.input_win)
   end
-
-  self:_update_winbar()
-  self:_update_input_winbar()
 end
 
 function ChatWidget:close()
@@ -540,7 +514,6 @@ function ChatWidget:_ensure_activity_timer()
       end
       self.activity_frame = (self.activity_frame % #ACTIVITY_SPINNER) + 1
       self:_render_activity()
-      self:_update_winbar()
     end)
   )
   pcall(function()
@@ -587,96 +560,6 @@ function ChatWidget:set_activity(state, label)
     self:_stop_activity_timer()
   end
   self:_render_activity()
-  self:_update_winbar()
-end
-
-function ChatWidget:_update_winbar()
-  if not win_valid(self.transcript_win) then
-    return
-  end
-  local info = self.header_info and self.header_info() or {}
-  local segments = { "%#ZxzChatHeader# 0x0 chat %*" }
-  if info.provider then
-    segments[#segments + 1] = "%#ZxzChatHeaderProvider#" .. info.provider .. "%*"
-  end
-  if info.model then
-    segments[#segments + 1] = "%#ZxzChatHeaderModel#" .. info.model .. "%*"
-  end
-  if info.mode then
-    segments[#segments + 1] = "%#ZxzChatHeaderMode#" .. info.mode .. "%*"
-  end
-  local attached = InlineDiff.list_attached()
-  if #attached > 0 then
-    local hunks = 0
-    for _, e in ipairs(attached) do
-      hunks = hunks + (e.hunks or 0)
-    end
-    segments[#segments + 1] = ("%%#ZxzChatHeaderStateWaiting#diffs: %d file%s, %d hunk%s%%*"):format(
-      #attached,
-      #attached == 1 and "" or "s",
-      hunks,
-      hunks == 1 and "" or "s"
-    )
-  end
-  if info.run then
-    local r = info.run
-    local elapsed = r.elapsed or 0
-    local elapsed_label
-    if elapsed >= 60 then
-      elapsed_label = ("%dm%02ds"):format(math.floor(elapsed / 60), elapsed % 60)
-    else
-      elapsed_label = ("%ds"):format(elapsed)
-    end
-    segments[#segments + 1] = ("%%#ZxzChatHeaderStateWaiting#run: %d tool%s · %d file%s · %s%%*"):format(
-      r.tool_count or 0,
-      (r.tool_count or 0) == 1 and "" or "s",
-      r.files or 0,
-      (r.files or 0) == 1 and "" or "s",
-      elapsed_label
-    )
-  end
-  local next_winbar = table.concat(segments, " │ ")
-  if vim.wo[self.transcript_win].winbar ~= next_winbar then
-    vim.wo[self.transcript_win].winbar = next_winbar
-  end
-end
-
-function ChatWidget:_update_input_winbar()
-  if not win_valid(self.input_win) then
-    return
-  end
-  local left = ""
-  if config.current.show_input_hints then
-    local segments = {}
-    for _, hint in ipairs(INPUT_HINTS) do
-      segments[#segments + 1] = "%#ZxzChatHintKey#" .. hint[1] .. "%* %#ZxzChatHintLabel#" .. hint[2] .. "%*"
-    end
-    left = " " .. table.concat(segments, "  ")
-  end
-  local summary = self.mention_summary
-  local right = ""
-  if summary and summary.total and summary.total > 0 then
-    local shown = {}
-    for i = 1, math.min(3, #summary.paths) do
-      shown[i] = vim.fn.fnamemodify(summary.paths[i], ":t")
-    end
-    local label = "ctx: " .. table.concat(shown, ", ")
-    if summary.total > #shown then
-      label = label .. (" (+%d)"):format(summary.total - #shown)
-    end
-    right = "%#ZxzChatHintLabel#" .. label .. "%* "
-  end
-  local next_winbar
-  if left == "" and right == "" then
-    next_winbar = ""
-  else
-    next_winbar = left .. "%=" .. right
-  end
-  -- Avoid redraws when nothing changed — setting winbar always invalidates
-  -- the window, which flickers during fast typing.
-  if vim.wo[self.input_win].winbar ~= next_winbar then
-    vim.wo[self.input_win].winbar = next_winbar
-  end
 end
 
 local function format_tool_line(tool)
@@ -983,7 +866,6 @@ function ChatWidget:render()
   self.rendered_count = #messages
   vim.bo[bufnr].modifiable = false
   self:_render_activity()
-  self:_update_winbar()
   self:_scroll_to_end()
 end
 
