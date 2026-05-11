@@ -1,5 +1,4 @@
 local config = require("zxz.core.config")
-local file_completion = require("zxz.context.file_completion")
 local Line = require("zxz.chat.line")
 local mention_highlight = require("zxz.context.mention_highlight")
 local tool_policy = require("zxz.chat.tool_policy")
@@ -152,6 +151,66 @@ local function disable_ambient_completion(bufnr)
   vim.b[bufnr].zxz_complete_disable = true
 end
 
+local INPUT_CONTROL_PATTERN = "["
+  .. string.char(1)
+  .. "-"
+  .. string.char(8)
+  .. string.char(11)
+  .. "-"
+  .. string.char(31)
+  .. string.char(127)
+  .. "]"
+
+local function strip_input_controls(line)
+  return (line:gsub(INPUT_CONTROL_PATTERN, ""))
+end
+
+local function sanitize_input_buffer(bufnr)
+  if not buf_valid(bufnr) or vim.b[bufnr].zxz_chat_sanitizing then
+    return
+  end
+
+  local lines = api.nvim_buf_get_lines(bufnr, 0, -1, false)
+  local changed = false
+  for i, line in ipairs(lines) do
+    local clean = strip_input_controls(line)
+    if clean ~= line then
+      lines[i] = clean
+      changed = true
+    end
+  end
+  if not changed then
+    return
+  end
+
+  vim.b[bufnr].zxz_chat_sanitizing = true
+  api.nvim_buf_set_lines(bufnr, 0, -1, false, lines)
+  vim.b[bufnr].zxz_chat_sanitizing = false
+end
+
+local function attach_input_sanitizer(bufnr)
+  local pending = false
+  local function schedule_sanitize()
+    if pending then
+      return
+    end
+    pending = true
+    vim.schedule(function()
+      pending = false
+      sanitize_input_buffer(bufnr)
+    end)
+  end
+
+  api.nvim_buf_attach(bufnr, false, {
+    on_lines = function()
+      schedule_sanitize()
+    end,
+    on_detach = function()
+      pending = false
+    end,
+  })
+end
+
 function ChatWidget:_ensure_transcript_buf()
   if buf_valid(self.transcript_buf) then
     return self.transcript_buf
@@ -243,10 +302,6 @@ function ChatWidget:_ensure_input_buf()
     end
     vim.keymap.set(mode, lhs, fn, o)
   end
-  local function feed(keys)
-    vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes(keys, true, false, true), "n", false)
-  end
-  local ReferenceMentions = require("zxz.context.reference_mentions")
 
   map("n", "<CR>", function()
     self.on_submit()
@@ -257,38 +312,6 @@ function ChatWidget:_ensure_input_buf()
   map("n", "<localleader>d", function()
     require("zxz.chat.chat").review()
   end, "0x0 chat review diff")
-  map("i", "@", function()
-    -- Only auto-trigger when `@` would start a real mention. Probe the
-    -- parser's own boundary rule by asking cursor_token what it would see
-    -- if `@` were already inserted at the cursor.
-    local line = api.nvim_get_current_line()
-    local col = api.nvim_win_get_cursor(0)[2]
-    local probe = line:sub(1, col) .. "@" .. line:sub(col + 1)
-    if ReferenceMentions.cursor_token(probe, col + 1) then
-      vim.schedule(file_completion.trigger)
-    end
-    return "@"
-  end, "0x0 chat file mention", { expr = true })
-  map("i", "<C-n>", function()
-    file_completion.select_next(1)
-  end, "0x0 chat next file mention")
-  map("i", "<C-p>", function()
-    file_completion.select_next(-1)
-  end, "0x0 chat previous file mention")
-  map("i", "<Tab>", function()
-    if not file_completion.accept() then
-      feed("<Tab>")
-    end
-  end, "0x0 chat accept file mention")
-  map("i", "<CR>", function()
-    if not file_completion.accept() then
-      feed("<CR>")
-    end
-  end, "0x0 chat accept file mention")
-  map("i", "<Esc>", function()
-    file_completion.close()
-    feed("<Esc>")
-  end, "0x0 chat close file mention")
   map("n", "<C-p>", function()
     self:nav_history(-1)
   end, "0x0 chat previous prompt")
@@ -297,8 +320,8 @@ function ChatWidget:_ensure_input_buf()
   end, "0x0 chat next prompt")
 
   self.input_buf = bufnr
-  file_completion.attach(bufnr)
-  -- Highlight mentions inline; no surface notification (no winbar to feed).
+  attach_input_sanitizer(bufnr)
+  -- Highlight manually typed mentions inline; keep the input itself plain.
   mention_highlight.attach(bufnr, vim.fn.getcwd(), nil)
   return bufnr
 end

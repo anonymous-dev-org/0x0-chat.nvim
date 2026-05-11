@@ -99,6 +99,15 @@ describe("chat orchestrator", function()
 end)
 
 describe("chat widget rendering", function()
+  local function has_buf_map(bufnr, mode, lhs)
+    for _, map in ipairs(vim.api.nvim_buf_get_keymap(bufnr, mode)) do
+      if map.lhs == lhs then
+        return true
+      end
+    end
+    return false
+  end
+
   it("uses one Agent heading for a run across tool loops", function()
     local History = require("zxz.core.history")
     local ChatWidget = require("zxz.chat.widget")
@@ -165,7 +174,7 @@ describe("chat widget rendering", function()
     vim.cmd("tabclose")
   end)
 
-  it("keeps the input clean and suppresses insert-mode completion noise", function()
+  it("keeps the input clean and leaves insert mode plain", function()
     local History = require("zxz.core.history")
     local ChatWidget = require("zxz.chat.widget")
     local history = History.new()
@@ -176,47 +185,40 @@ describe("chat widget rendering", function()
 
     assert.are.equal("", vim.wo[widget.input_win].winbar)
     assert.are.equal("", vim.bo[widget.input_buf].complete)
-    assert.are.equal(1, vim.fn.maparg("<C-n>", "i", false, true).buffer)
-    assert.are.equal(1, vim.fn.maparg("<C-p>", "i", false, true).buffer)
+    assert.is_false(has_buf_map(widget.input_buf, "i", "<C-N>"))
+    assert.is_false(has_buf_map(widget.input_buf, "i", "<C-P>"))
+    assert.is_false(has_buf_map(widget.input_buf, "i", "<Tab>"))
     assert.are.equal(1, vim.fn.maparg("<C-n>", "n", false, true).buffer)
     assert.are.equal(1, vim.fn.maparg("<C-p>", "n", false, true).buffer)
 
-    vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("iabc<C-n>def", true, false, true), "xt", false)
+    vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("iHello", true, false, true), "xt", false)
     local lines = vim.api.nvim_buf_get_lines(widget.input_buf, 0, -1, false)
-    assert.are.equal("abcdef", lines[1])
+    assert.are.equal("Hello", lines[1])
 
     widget:close()
     vim.cmd("tabclose")
   end)
 
-  it("accepts @ file mentions from the owned dropdown", function()
+  it("strips literal control characters from typed input", function()
     local History = require("zxz.core.history")
     local ChatWidget = require("zxz.chat.widget")
-    local file_completion = require("zxz.context.file_completion")
-    local repo = vim.loop.fs_realpath(helpers.make_repo({
-      ["src/main.lua"] = "print('ok')\n",
-      ["src/worker.lua"] = "return {}\n",
-      ["notes/with space.md"] = "unsupported for now\n",
-    }))
-    local previous_cwd = vim.fn.getcwd()
-    vim.cmd("lcd " .. vim.fn.fnameescape(repo))
-
     local history = History.new()
     vim.cmd("tabnew")
     local widget = ChatWidget.new(vim.api.nvim_get_current_tabpage(), history, function() end, function() end)
     widget:open()
 
-    vim.api.nvim_buf_set_lines(widget.input_buf, 0, -1, false, { "@src/m" })
-    vim.api.nvim_win_set_cursor(widget.input_win, { 1, #"@src/m" })
-    file_completion.trigger()
-    assert.is_true(file_completion.accept())
-
+    vim.api.nvim_feedkeys(
+      vim.api.nvim_replace_termcodes("iH<C-v><C-n>e<C-v><C-n>l<C-v><C-n>l<C-v><C-n>o<C-v><C-n>", true, false, true),
+      "xt",
+      false
+    )
+    vim.wait(100, function()
+      return vim.api.nvim_buf_get_lines(widget.input_buf, 0, -1, false)[1] == "Hello"
+    end)
     local lines = vim.api.nvim_buf_get_lines(widget.input_buf, 0, -1, false)
-    assert.are.equal("@src/main.lua ", lines[1])
+    assert.are.equal("Hello", lines[1])
 
     widget:close()
     vim.cmd("tabclose")
-    vim.cmd("lcd " .. vim.fn.fnameescape(previous_cwd))
-    helpers.cleanup(repo)
   end)
 end)
