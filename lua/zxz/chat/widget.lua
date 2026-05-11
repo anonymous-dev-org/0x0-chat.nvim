@@ -163,6 +163,10 @@ local function disable_ambient_completion(bufnr)
   vim.bo[bufnr].complete = ""
   vim.b[bufnr].cmp_enabled = false
   vim.b[bufnr].blink_cmp_enabled = false
+  -- Explicit contract for our own inline ghost completion: opt out here.
+  -- Chat input / transcript are not file-backed; ambient AI completion is
+  -- noise, and rerendering virt_text on every keystroke disrupts the UI.
+  vim.b[bufnr].zxz_complete_disable = true
 end
 
 function ChatWidget:_ensure_transcript_buf()

@@ -61,8 +61,14 @@ function M._on_text_changed()
   local bufnr = vim.api.nvim_get_current_buf()
   local ft = vim.bo[bufnr].filetype
 
-  -- Only run in regular file buffers. Skips chat input, prompts, terminal,
-  -- nofile scratch buffers, etc. — anywhere ghost text would just be noise.
+  -- Explicit per-buffer opt-out. Set by buffers that don't want ambient AI
+  -- completion (e.g. chat input/transcript via disable_ambient_completion).
+  if vim.b[bufnr].zxz_complete_disable then
+    return
+  end
+
+  -- Fallback safety net: only run in regular file buffers. Catches terminal,
+  -- prompt, nofile scratch buffers, and anything that forgot to set the flag.
   if vim.bo[bufnr].buftype ~= "" then
     return
   end
