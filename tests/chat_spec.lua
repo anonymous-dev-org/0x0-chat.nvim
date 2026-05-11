@@ -42,9 +42,16 @@ describe("chat orchestrator", function()
       "set_provider",
       "set_model",
       "set_mode",
+      "set_config_option",
       "discover_options",
       "option_items",
       "has_config_option",
+      "add_context_token",
+      "queue_state",
+      "queue_update",
+      "queue_remove",
+      "queue_clear",
+      "queue_send_next",
     }) do
       assert.is_function(M[name], "M." .. name .. " missing")
     end
@@ -62,6 +69,13 @@ describe("chat orchestrator", function()
     assert.is_truthy(commands.ZxzChatRunReview)
     assert.is_truthy(commands.ZxzChatRunAccept)
     assert.is_truthy(commands.ZxzChatRunReject)
+    assert.is_truthy(commands.ZxzAgent)
+    assert.is_truthy(commands.ZxzContext)
+    assert.is_truthy(commands.ZxzProfile)
+    assert.is_truthy(commands.ZxzQueue)
+    assert.is_truthy(commands.ZxzReview)
+    assert.is_truthy(commands.ZxzRuns)
+    assert.is_truthy(commands.ZxzSpawn)
   end)
 
   it("submit on an empty input only warns, does not throw", function()

@@ -13,12 +13,15 @@ function M:_set_config_options(options)
   end
   for _, option in ipairs(options) do
     local category = type(option.category) == "string" and option.category or ""
-    if category == "mode" or category == "model" then
+    if category ~= "" then
       self.config_options[category] = option
       if category == "mode" then
         self.mode = option.currentValue or self.mode
       elseif category == "model" then
         self.model = option.currentValue or self.model
+      else
+        self.config_values = self.config_values or {}
+        self.config_values[category] = option.currentValue or self.config_values[category]
       end
     end
   end
@@ -37,6 +40,18 @@ local function option_has_value(option, value)
 end
 
 function M:_apply_config_option(category, value, callback)
+  callback = callback or function() end
+  if value == nil or value == "" then
+    self.config_values = self.config_values or {}
+    self.config_values[category] = nil
+    if category == "mode" then
+      self.mode = nil
+    elseif category == "model" then
+      self.model = nil
+    end
+    callback(true)
+    return
+  end
   if not self.client or not self.session_id then
     callback(false)
     return
@@ -60,6 +75,9 @@ function M:_apply_config_option(category, value, callback)
         self.mode = value
       elseif category == "model" then
         self.model = value
+      else
+        self.config_values = self.config_values or {}
+        self.config_values[category] = value
       end
       if option then
         option.currentValue = value
@@ -91,20 +109,30 @@ function M:_apply_config_option(category, value, callback)
 end
 
 function M:_apply_initial_session_config(desired, done)
-  local function set_model()
-    if desired.model then
-      self:_apply_config_option("model", desired.model, function()
-        done()
-      end)
-    else
-      done()
+  local pending = {}
+  if desired.mode then
+    pending[#pending + 1] = { "mode", desired.mode }
+  end
+  if desired.model then
+    pending[#pending + 1] = { "model", desired.model }
+  end
+  for category, value in pairs(desired.config_values or {}) do
+    if value ~= nil and category ~= "mode" and category ~= "model" then
+      pending[#pending + 1] = { category, value }
     end
   end
-  if desired.mode and option_has_value(self.config_options.mode, desired.mode) then
-    self:_apply_config_option("mode", desired.mode, set_model)
-  else
-    set_model()
+
+  local i = 1
+  local function next_option()
+    local item = pending[i]
+    i = i + 1
+    if not item then
+      done()
+      return
+    end
+    self:_apply_config_option(item[1], item[2], next_option)
   end
+  next_option()
 end
 
 function M:_ensure_client(on_ready)
@@ -140,7 +168,7 @@ function M:_ensure_session(on_session)
         on_session(client, self.session_id, nil)
         return
       end
-      local desired = { mode = self.mode, model = self.model }
+      local desired = { mode = self.mode, model = self.model, config_values = vim.deepcopy(self.config_values or {}) }
       client:new_session(cwd, function(result, err)
         if self.client ~= client then
           on_session(nil, nil, { message = "client replaced" })
@@ -183,13 +211,15 @@ function M:_ensure_session(on_session)
   end)
 end
 
----@return { provider: string, model: string|nil, mode: string|nil, config_options: table }
+---@return { provider: string, model: string|nil, mode: string|nil, profile: string, config_options: table, config_values: table }
 function M:current_settings()
   return {
     provider = self.provider_name or config.current.provider,
     model = self.model,
     mode = self.mode,
+    profile = config.current.profile or config.current.default_profile,
     config_options = self.config_options,
+    config_values = self.config_values or {},
   }
 end
 
@@ -198,6 +228,7 @@ function M:set_provider(name)
   self.provider_name = name
   self.model = nil
   self.mode = nil
+  self.config_values = {}
 end
 
 function M:set_model(model)
@@ -211,6 +242,21 @@ function M:set_mode(mode)
   self.mode = mode
   if self.client and self.session_id then
     self:_apply_config_option("mode", mode, function() end)
+  end
+end
+
+function M:set_config_option(category, value)
+  self.config_values = self.config_values or {}
+  self.config_values[category] = value
+  if category == "mode" then
+    self:set_mode(value)
+    return
+  elseif category == "model" then
+    self:set_model(value)
+    return
+  end
+  if self.client and self.session_id then
+    self:_apply_config_option(category, value, function() end)
   end
 end
 

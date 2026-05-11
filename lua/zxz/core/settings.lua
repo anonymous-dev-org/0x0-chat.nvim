@@ -112,6 +112,36 @@ local function pick_config_option(chat, category, label, setter)
   end)
 end
 
+local function pick_favorite_model(chat)
+  local favorites = config.current.favorite_models or {}
+  if #favorites == 0 then
+    notify("no favorite models configured")
+    return
+  end
+  local current = chat.current_settings()
+  vim.ui.select(favorites, {
+    prompt = "0x0 favorite model",
+    format_item = function(item)
+      local provider = item.provider or current.provider
+      local model = item.model or item
+      local prefix = provider == current.provider and model == current.model and "● " or "  "
+      return ("%s%s / %s"):format(prefix, provider, model)
+    end,
+  }, function(choice)
+    if not choice then
+      return
+    end
+    if type(choice) == "table" and choice.provider and choice.provider ~= current.provider then
+      chat.set_provider(choice.provider)
+    end
+    local model = type(choice) == "table" and choice.model or choice
+    if model then
+      chat.set_model(model)
+      notify("model: " .. tostring(model))
+    end
+  end)
+end
+
 function M.open()
   local chat = require("zxz.chat.chat")
   local current = chat.current_settings()
@@ -135,6 +165,28 @@ function M.open()
         pick_config_option(chat, "mode", "mode", chat.set_mode)
       end,
     },
+    {
+      label = "Thinking: " .. tostring((current.config_values or {}).thinking or "provider default"),
+      run = function()
+        pick_config_option(chat, "thinking", "thinking", function(value)
+          chat.set_config_option("thinking", value)
+        end)
+      end,
+    },
+    {
+      label = "Effort: " .. tostring((current.config_values or {}).effort or "provider default"),
+      run = function()
+        pick_config_option(chat, "effort", "effort", function(value)
+          chat.set_config_option("effort", value)
+        end)
+      end,
+    },
+    {
+      label = "Favorite model",
+      run = function()
+        pick_favorite_model(chat)
+      end,
+    },
   }
 
   vim.ui.select(actions, {
@@ -147,6 +199,29 @@ function M.open()
       action.run()
     end
   end)
+end
+
+function M.provider()
+  pick_provider(require("zxz.chat.chat"))
+end
+
+function M.model()
+  pick_model(require("zxz.chat.chat"))
+end
+
+function M.mode()
+  pick_config_option(require("zxz.chat.chat"), "mode", "mode", require("zxz.chat.chat").set_mode)
+end
+
+function M.option(category, label)
+  local chat = require("zxz.chat.chat")
+  pick_config_option(chat, category, label or category, function(value)
+    chat.set_config_option(category, value)
+  end)
+end
+
+function M.favorite_model()
+  pick_favorite_model(require("zxz.chat.chat"))
 end
 
 return M

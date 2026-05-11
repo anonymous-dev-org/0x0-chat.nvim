@@ -72,6 +72,11 @@ local SPECIAL_MENTIONS = {
   { label = "@recent", path = "recent" },
   { label = "@repomap", path = "repomap" },
   { label = "@test-output", path = "test-output" },
+  { label = "@fetch:", path = "fetch" },
+  { label = "@diff:main", path = "diff" },
+  { label = "@rule:project", path = "rule" },
+  { label = "@thread:", path = "thread" },
+  { label = "@terminal", path = "terminal" },
 }
 
 local function matches_for_token(token)

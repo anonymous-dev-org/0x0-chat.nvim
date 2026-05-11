@@ -64,6 +64,23 @@ describe("reference_mentions @diagnostics", function()
     assert.are.equal("repomap", mentions[1].type)
   end)
 
+  it("parses first-class AI IDE context mentions", function()
+    local mentions = ReferenceMentions.parse(
+      "use @fetch:https://example.com/docs and @diff:main plus @rule:project @thread:abc123 @terminal",
+      vim.fn.getcwd()
+    )
+    assert.are.equal(5, #mentions)
+    assert.are.equal("fetch", mentions[1].type)
+    assert.are.equal("https://example.com/docs", mentions[1].url)
+    assert.are.equal("branch_diff", mentions[2].type)
+    assert.are.equal("main", mentions[2].base)
+    assert.are.equal("rule", mentions[3].type)
+    assert.are.equal("project", mentions[3].name)
+    assert.are.equal("thread", mentions[4].type)
+    assert.are.equal("abc123", mentions[4].id)
+    assert.are.equal("terminal", mentions[5].type)
+  end)
+
   it("does not match @-tokens embedded in emails or mid-word", function()
     -- bob@example.com → no mention.
     -- README.md@v2 → no mention (mid-word @).

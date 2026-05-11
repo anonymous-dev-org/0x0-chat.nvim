@@ -66,6 +66,19 @@ function M.is_auto_approve(class)
   return false
 end
 
+---@param class string
+---@return boolean
+function M.is_denied(class)
+  local policy = config.current.tool_policy or {}
+  local denied = policy.deny or policy.deny_classes or {}
+  for _, c in ipairs(denied) do
+    if c == class then
+      return true
+    end
+  end
+  return false
+end
+
 ---Decide whether a tool call gets auto-approved, considering class AND path.
 ---deny_paths beats auto_approve_paths beats class membership.
 ---@param tool_call table

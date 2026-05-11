@@ -50,6 +50,14 @@ function M:_present_permission(request, respond)
   local options = request.options or {}
 
   local class = tool_policy.classify(tool_call)
+  if tool_policy.is_denied(class) then
+    local opt_id = find_option(options, "reject_once") or find_option(options, "reject_always")
+    if opt_id then
+      respond(opt_id)
+      self:_pump_permission_queue()
+      return
+    end
+  end
   if tool_policy.decide(tool_call, class) then
     local opt_id = find_option(options, "allow_once") or find_option(options, "allow_always")
     if opt_id then

@@ -17,6 +17,50 @@ function M.setup(opts)
     require("zxz.complete").settings()
   end, { desc = "0x0: inline completion settings" })
 
+  vim.api.nvim_create_user_command("ZxzAgent", function()
+    require("zxz.agent").open()
+  end, { desc = "0x0: open the AI-first agent command center" })
+
+  vim.api.nvim_create_user_command("ZxzContext", function()
+    require("zxz.context.picker").open()
+  end, { desc = "0x0: add context to the active agent prompt" })
+
+  vim.api.nvim_create_user_command("ZxzProfile", function()
+    require("zxz.core.profiles").open()
+  end, { desc = "0x0: switch agent profile" })
+
+  vim.api.nvim_create_user_command("ZxzModel", function()
+    require("zxz.core.settings").open()
+  end, { desc = "0x0: switch model, mode, thinking, or favorites" })
+
+  vim.api.nvim_create_user_command("ZxzThinkingToggle", function()
+    require("zxz.core.settings").option("thinking", "thinking")
+  end, { desc = "0x0: toggle provider thinking mode when available" })
+
+  vim.api.nvim_create_user_command("ZxzThinkingEffort", function()
+    require("zxz.core.settings").option("effort", "effort")
+  end, { desc = "0x0: pick provider thinking effort when available" })
+
+  vim.api.nvim_create_user_command("ZxzQueue", function()
+    require("zxz.chat.queue").open()
+  end, { desc = "0x0: inspect queued agent messages" })
+
+  vim.api.nvim_create_user_command("ZxzQueueEdit", function()
+    require("zxz.chat.queue").edit_first()
+  end, { desc = "0x0: edit the next queued agent message" })
+
+  vim.api.nvim_create_user_command("ZxzQueueRemove", function()
+    require("zxz.chat.queue").remove_first()
+  end, { desc = "0x0: remove the next queued agent message" })
+
+  vim.api.nvim_create_user_command("ZxzQueueClear", function()
+    require("zxz.chat.queue").clear()
+  end, { desc = "0x0: clear queued agent messages" })
+
+  vim.api.nvim_create_user_command("ZxzQueueSendNext", function()
+    require("zxz.chat.queue").send_next()
+  end, { desc = "0x0: send the next queued agent message" })
+
   vim.api.nvim_create_user_command("ZxzChat", function(opts)
     local chat = require("zxz.chat.chat")
     if opts.range and opts.range > 0 then
@@ -63,6 +107,10 @@ function M.setup(opts)
     require("zxz.chat.chat").review()
   end, { desc = "Review chat changes in vimdiff against the turn checkpoint" })
 
+  vim.api.nvim_create_user_command("ZxzReview", function()
+    require("zxz.chat.chat").review()
+  end, { desc = "0x0: review current agent changes" })
+
   vim.api.nvim_create_user_command("ZxzChatRunReview", function(args)
     local id = args.args
     if id == "" then
@@ -78,6 +126,13 @@ function M.setup(opts)
     require("zxz.chat.chat").runs_picker(args.bang)
   end, {
     desc = "Pick a Run to review; with ! filter to the current thread",
+    bang = true,
+  })
+
+  vim.api.nvim_create_user_command("ZxzRuns", function(args)
+    require("zxz.chat.chat").runs_picker(args.bang)
+  end, {
+    desc = "0x0: pick an agent run to review",
     bang = true,
   })
 
@@ -253,6 +308,38 @@ function M.setup(opts)
     vim.notify("0x0: spawned detached run " .. run_id, vim.log.levels.INFO)
   end, {
     desc = "Spawn a detached autonomous run without opening the chat sidebar",
+    nargs = "+",
+  })
+
+  vim.api.nvim_create_user_command("ZxzSpawn", function(opts)
+    local prompt = vim.trim(opts.args or "")
+    if prompt == "" then
+      vim.notify("usage: :ZxzSpawn <prompt>", vim.log.levels.WARN)
+      return
+    end
+    local run_id, err = require("zxz.core.run_registry").spawn({
+      prompt = prompt,
+      cwd = vim.fn.getcwd(),
+      on_complete = function(rid, status, files)
+        vim.notify(
+          ("0x0 detached run %s: %s, %d file%s changed. :ZxzChatRunReview %s"):format(
+            rid,
+            status,
+            #files,
+            #files == 1 and "" or "s",
+            rid
+          ),
+          vim.log.levels.INFO
+        )
+      end,
+    })
+    if not run_id then
+      vim.notify("0x0: " .. (err or "spawn failed"), vim.log.levels.ERROR)
+      return
+    end
+    vim.notify("0x0: spawned detached run " .. run_id, vim.log.levels.INFO)
+  end, {
+    desc = "0x0: spawn a detached autonomous agent run",
     nargs = "+",
   })
 

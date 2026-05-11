@@ -190,6 +190,62 @@ function M.parse(input, cwd)
     end
 
     do
+      local kind, value = token:match("^(fetch)%:(.+)$")
+      if kind and value and value:match("^https?://") then
+        local key = "fetch\0" .. value
+        if not seen[key] then
+          seen[key] = true
+          table.insert(mentions, attach_range({ raw = "@" .. token, type = "fetch", url = value }))
+        end
+        goto continue
+      end
+    end
+
+    do
+      local value = token:match("^diff%:(.+)$")
+      if value and value ~= "" then
+        local key = "diff\0" .. value
+        if not seen[key] then
+          seen[key] = true
+          table.insert(mentions, attach_range({ raw = "@" .. token, type = "branch_diff", base = value }))
+        end
+        goto continue
+      end
+    end
+
+    do
+      local value = token:match("^rule%:(.+)$")
+      if value and value ~= "" then
+        local key = "rule\0" .. value
+        if not seen[key] then
+          seen[key] = true
+          table.insert(mentions, attach_range({ raw = "@" .. token, type = "rule", name = value }))
+        end
+        goto continue
+      end
+    end
+
+    do
+      local value = token:match("^thread%:(.+)$")
+      if value and value ~= "" then
+        local key = "thread\0" .. value
+        if not seen[key] then
+          seen[key] = true
+          table.insert(mentions, attach_range({ raw = "@" .. token, type = "thread", id = value }))
+        end
+        goto continue
+      end
+    end
+
+    if token == "terminal" or token == "terminal-output" then
+      if not seen["terminal"] then
+        seen["terminal"] = true
+        table.insert(mentions, attach_range({ raw = "@" .. token, type = "terminal" }))
+      end
+      goto continue
+    end
+
+    do
       local range_path, start_line, end_line = token:match("^(.-)#L(%d+)%s*%-L?(%d+)$")
       if not range_path then
         range_path, start_line = token:match("^(.-)#L(%d+)$")
@@ -472,6 +528,101 @@ local function format_diagnostics_block(mention)
   }
 end
 
+local function format_fetch_block(mention)
+  return {
+    type = "text",
+    text = ("Fetch this URL as context if needed: %s"):format(mention.url),
+  }
+end
+
+local function format_branch_diff_block(mention, cwd)
+  cwd = cwd or vim.fn.getcwd()
+  local stat = vim.fn.systemlist({ "git", "-C", cwd, "diff", "--stat", mention.base .. "..." })
+  local diff = vim.fn.systemlist({ "git", "-C", cwd, "diff", "--unified=3", mention.base .. "..." })
+  if vim.v.shell_error ~= 0 then
+    return { type = "text", text = ("Branch diff `%s`: unavailable."):format(mention.base) }
+  end
+  local max_lines = 300
+  if #diff > max_lines then
+    diff = vim.list_slice(diff, 1, max_lines)
+    diff[#diff + 1] = ("... truncated after %d lines"):format(max_lines)
+  end
+  return {
+    type = "text",
+    text = table.concat({
+      ("Branch diff against `%s`:"):format(mention.base),
+      "Stat:",
+      "```",
+      table.concat(stat, "\n"),
+      "```",
+      "Diff:",
+      "```diff",
+      table.concat(diff, "\n"),
+      "```",
+    }, "\n"),
+  }
+end
+
+local function format_rule_block(mention, cwd)
+  cwd = cwd or vim.fn.getcwd()
+  local cfg = require("zxz.core.config").current
+  local candidates = {
+    ".0x0/rules/" .. mention.name .. ".md",
+    ".zed/rules/" .. mention.name .. ".md",
+  }
+  if mention.name == "project" or mention.name == "rules" then
+    for _, path in ipairs((cfg.rules and cfg.rules.paths) or {}) do
+      candidates[#candidates + 1] = path
+    end
+  end
+
+  for _, rel in ipairs(candidates) do
+    local abs = to_absolute_path(rel, cwd)
+    local stat = vim.loop.fs_stat(abs)
+    if stat and stat.type == "file" then
+      local lines = vim.fn.readfile(abs)
+      return {
+        type = "text",
+        text = table.concat({
+          ("Rule `%s` from %s:"):format(mention.name, rel),
+          "```markdown",
+          table.concat(lines, "\n"),
+          "```",
+        }, "\n"),
+      }
+    end
+  end
+  return { type = "text", text = ("Rule `%s`: no matching rule file found."):format(mention.name) }
+end
+
+local function format_thread_block(mention)
+  local HistoryStore = require("zxz.core.history_store")
+  local entry = HistoryStore.load(mention.id)
+  if not entry then
+    return { type = "text", text = ("Thread `%s`: not found."):format(mention.id) }
+  end
+  local lines = { ("Thread `%s` (%s):"):format(mention.id, entry.title or "untitled") }
+  for _, msg in ipairs(entry.messages or {}) do
+    if msg.type == "user" then
+      lines[#lines + 1] = "User: " .. tostring(msg.text or "")
+    elseif msg.type == "agent" then
+      lines[#lines + 1] = "Agent: " .. tostring(msg.text or "")
+    end
+    if #lines >= 40 then
+      lines[#lines + 1] = "... truncated"
+      break
+    end
+  end
+  return { type = "text", text = table.concat(lines, "\n") }
+end
+
+local function format_terminal_block()
+  return {
+    type = "text",
+    text = "Terminal output context requested, but no terminal capture is available from this Neovim session yet.",
+  }
+end
+
 function M.to_prompt_blocks(input, cwd)
   local blocks = { metadata_block(cwd), { type = "text", text = input } }
 
@@ -503,6 +654,16 @@ function M.to_prompt_blocks(input, cwd)
         type = "text",
         text = table.concat({ header, "```", body, "```" }, "\n"),
       })
+    elseif mention.type == "fetch" then
+      table.insert(blocks, format_fetch_block(mention))
+    elseif mention.type == "branch_diff" then
+      table.insert(blocks, format_branch_diff_block(mention, cwd))
+    elseif mention.type == "rule" then
+      table.insert(blocks, format_rule_block(mention, cwd))
+    elseif mention.type == "thread" then
+      table.insert(blocks, format_thread_block(mention))
+    elseif mention.type == "terminal" then
+      table.insert(blocks, format_terminal_block())
     elseif mention.type == "file" then
       local rel = mention.path or vim.fn.fnamemodify(mention.absolute_path, ":~:.")
       local summary = maybe_file_summary(mention.absolute_path, rel)

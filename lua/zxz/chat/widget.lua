@@ -489,6 +489,21 @@ function ChatWidget:reset()
   self:set_activity(nil)
 end
 
+function ChatWidget:rerender_all()
+  if buf_valid(self.transcript_buf) then
+    vim.bo[self.transcript_buf].modifiable = true
+    api.nvim_buf_set_lines(self.transcript_buf, 0, -1, false, {})
+    api.nvim_buf_clear_namespace(self.transcript_buf, NS, 0, -1)
+    vim.bo[self.transcript_buf].modifiable = false
+  end
+  self.rendered_count = 0
+  self.tool_extmarks = {}
+  self.user_extmarks = {}
+  self.last_kind = nil
+  self.agent_run_open = false
+  self:render()
+end
+
 function ChatWidget:_stop_activity_timer()
   if not self.activity_timer then
     return

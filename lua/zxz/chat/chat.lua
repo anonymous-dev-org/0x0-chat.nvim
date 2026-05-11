@@ -188,6 +188,120 @@ function Chat:_add_prompt_block(lines)
   self.widget:focus_input()
 end
 
+function Chat:_rerender_transcript()
+  self.widget:rerender_all()
+  self:_schedule_persist()
+end
+
+---@param token string
+function Chat:add_context_token(token)
+  token = type(token) == "string" and vim.trim(token) or ""
+  if token == "" then
+    return
+  end
+  self:_add_prompt_block({ token, "" })
+end
+
+---@return { count: integer, in_flight: boolean, items: table[] }
+function Chat:queue_state()
+  local items = {}
+  for index, item in ipairs(self.queued_prompts) do
+    items[#items + 1] = {
+      index = index,
+      id = item.id,
+      text = item.text,
+    }
+  end
+  return {
+    count = #items,
+    in_flight = self.in_flight,
+    items = items,
+  }
+end
+
+---@param id string
+---@param text string
+function Chat:_update_queued_history_text(id, text)
+  for i = #self.history.messages, 1, -1 do
+    local msg = self.history.messages[i]
+    if msg.type == "user" and msg.id == id then
+      msg.text = text
+      msg.status = "queued"
+      return
+    end
+  end
+end
+
+---@param id string
+function Chat:_remove_queued_history_message(id)
+  for i = #self.history.messages, 1, -1 do
+    local msg = self.history.messages[i]
+    if msg.type == "user" and msg.id == id then
+      table.remove(self.history.messages, i)
+      return
+    end
+  end
+end
+
+---@param index integer
+---@param text string
+---@return boolean ok
+---@return string|nil err
+function Chat:queue_update(index, text)
+  index = tonumber(index)
+  text = type(text) == "string" and vim.trim(text) or ""
+  local item = index and self.queued_prompts[index] or nil
+  if not item then
+    return false, "queued message not found"
+  end
+  if text == "" then
+    return false, "queued message cannot be empty"
+  end
+  item.text = text
+  self:_update_queued_history_text(item.id, text)
+  self:_rerender_transcript()
+  return true
+end
+
+---@param index integer
+---@return boolean ok
+---@return string|nil err
+function Chat:queue_remove(index)
+  index = tonumber(index)
+  local item = index and self.queued_prompts[index] or nil
+  if not item then
+    return false, "queued message not found"
+  end
+  table.remove(self.queued_prompts, index)
+  self:_remove_queued_history_message(item.id)
+  self:_set_turn_activity(self.widget.activity_state, self.widget.activity_label)
+  self:_rerender_transcript()
+  return true
+end
+
+function Chat:queue_clear()
+  while #self.queued_prompts > 0 do
+    local item = table.remove(self.queued_prompts)
+    self:_remove_queued_history_message(item.id)
+  end
+  self:_set_turn_activity(self.widget.activity_state, self.widget.activity_label)
+  self:_rerender_transcript()
+end
+
+---@return boolean ok
+---@return string|nil err
+function Chat:queue_send_next()
+  if self.in_flight then
+    return false, "agent is still working"
+  end
+  local item = table.remove(self.queued_prompts, 1)
+  if not item then
+    return false, "queue is empty"
+  end
+  self:_submit_prompt(item.text, item.id)
+  return true
+end
+
 ---Return true if the chat input already mentions the given path
 ---(optionally with the same range).
 ---@param rel string repo-relative or display path
@@ -528,6 +642,10 @@ function M.set_mode(mode)
   for_current_tab():set_mode(mode)
 end
 
+function M.set_config_option(category, value)
+  for_current_tab():set_config_option(category, value)
+end
+
 function M.discover_options(callback)
   for_current_tab():discover_options(callback)
 end
@@ -538,6 +656,30 @@ end
 
 function M.has_config_option(category)
   return for_current_tab():has_config_option(category)
+end
+
+function M.add_context_token(token)
+  for_current_tab():add_context_token(token)
+end
+
+function M.queue_state()
+  return for_current_tab():queue_state()
+end
+
+function M.queue_update(index, text)
+  return for_current_tab():queue_update(index, text)
+end
+
+function M.queue_remove(index)
+  return for_current_tab():queue_remove(index)
+end
+
+function M.queue_clear()
+  for_current_tab():queue_clear()
+end
+
+function M.queue_send_next()
+  return for_current_tab():queue_send_next()
 end
 
 return M
