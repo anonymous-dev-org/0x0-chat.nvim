@@ -61,6 +61,12 @@ function M._on_text_changed()
   local bufnr = vim.api.nvim_get_current_buf()
   local ft = vim.bo[bufnr].filetype
 
+  -- Only run in regular file buffers. Skips chat input, prompts, terminal,
+  -- nofile scratch buffers, etc. — anywhere ghost text would just be noise.
+  if vim.bo[bufnr].buftype ~= "" then
+    return
+  end
+
   -- Check filetype exclusion
   for _, excluded in ipairs(cfg.filetypes.exclude) do
     if ft == excluded then
