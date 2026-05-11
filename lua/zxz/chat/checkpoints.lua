@@ -4,6 +4,7 @@
 local config = require("zxz.core.config")
 local Checkpoint = require("zxz.core.checkpoint")
 local InlineDiff = require("zxz.edit.inline_diff")
+local Ledger = require("zxz.edit.ledger")
 local Reconcile = require("zxz.core.reconcile")
 
 local M = {}
@@ -110,6 +111,11 @@ function M:accept_all()
     vim.notify("0x0: no pending changes", vim.log.levels.INFO)
     return
   end
+  local ok, err = Ledger.accept_all(self.checkpoint)
+  if not ok then
+    vim.notify("0x0: " .. (err or "accept failed"), vim.log.levels.ERROR)
+    return
+  end
   self:_clear_checkpoint()
   vim.notify(("0x0: accepted %d file%s"):format(#files, #files == 1 and "" or "s"), vim.log.levels.INFO)
   return true
@@ -120,7 +126,7 @@ function M:discard_all()
     vim.notify("0x0: no checkpoint to discard against", vim.log.levels.INFO)
     return
   end
-  local ok, err = Checkpoint.restore_all(self.checkpoint)
+  local ok, err = Ledger.reject_all(self.checkpoint)
   if not ok then
     vim.notify("0x0: " .. (err or "discard failed"), vim.log.levels.ERROR)
     return
@@ -180,120 +186,6 @@ function M:diff(tool_call_id)
   vim.bo[bufnr].modifiable = false
 end
 
-local REVIEW_STATUS = {
-  added = "A",
-  modified = "M",
-  deleted = "D",
-}
-
----@param checkpoint table
----@param files string[]
----@return table[]
-local function review_entries(checkpoint, files)
-  local entries = {}
-  for _, path in ipairs(files) do
-    local _, existed = Checkpoint.read_file(checkpoint, path)
-    local exists_now = vim.fn.filereadable(checkpoint.root .. "/" .. path) == 1
-    local kind = "modified"
-    if not existed and exists_now then
-      kind = "added"
-    elseif existed and not exists_now then
-      kind = "deleted"
-    end
-    entries[#entries + 1] = {
-      path = path,
-      kind = kind,
-      label = ("%s %s"):format(REVIEW_STATUS[kind] or "M", path),
-    }
-  end
-  table.sort(entries, function(a, b)
-    return a.path < b.path
-  end)
-  return entries
-end
-
-local function set_scratch_lines(bufnr, name, lines, filetype)
-  vim.api.nvim_buf_set_name(bufnr, name)
-  vim.bo[bufnr].buftype = "nofile"
-  vim.bo[bufnr].bufhidden = "wipe"
-  vim.bo[bufnr].swapfile = false
-  vim.bo[bufnr].filetype = filetype or ""
-  vim.bo[bufnr].modifiable = true
-  vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, lines)
-  vim.bo[bufnr].modifiable = false
-end
-
----@param review table
----@param idx integer
-function M:_open_review_entry(review, idx)
-  local entry = review.entries[idx]
-  if not entry or not self.checkpoint then
-    return
-  end
-
-  if review.opening then
-    return
-  end
-  review.opening = true
-
-  local ok, err = pcall(function()
-    for _, win in ipairs(vim.api.nvim_tabpage_list_wins(review.tabpage)) do
-      if win ~= review.list_win and vim.api.nvim_win_is_valid(win) then
-        pcall(vim.api.nvim_win_close, win, true)
-      end
-    end
-
-    vim.api.nvim_set_current_win(review.list_win)
-    vim.api.nvim_win_set_cursor(review.list_win, { idx, 0 })
-    vim.api.nvim_buf_clear_namespace(review.list_buf, review.ns, 0, -1)
-    vim.api.nvim_buf_set_extmark(review.list_buf, review.ns, idx - 1, 0, {
-      line_hl_group = "Visual",
-    })
-
-    local path = entry.path
-    local abs = self.checkpoint.root .. "/" .. path
-    local base, existed = Checkpoint.read_file(self.checkpoint, path)
-    local base_lines = vim.split(base or "", "\n", { plain = true })
-    if base_lines[#base_lines] == "" then
-      table.remove(base_lines)
-    end
-    if not existed then
-      base_lines = {}
-    end
-
-    vim.cmd("rightbelow vertical new")
-    local base_win = vim.api.nvim_get_current_win()
-    local base_buf = vim.api.nvim_get_current_buf()
-    set_scratch_lines(
-      base_buf,
-      ("0x0 checkpoint: %s"):format(path),
-      base_lines,
-      vim.filetype.match({ filename = path }) or ""
-    )
-
-    local work_win
-    if entry.kind == "deleted" then
-      vim.cmd("rightbelow vertical new")
-      work_win = vim.api.nvim_get_current_win()
-      local work_buf = vim.api.nvim_get_current_buf()
-      set_scratch_lines(work_buf, ("0x0 deleted: %s"):format(path), {}, vim.bo[base_buf].filetype)
-    else
-      vim.cmd("rightbelow vertical edit " .. vim.fn.fnameescape(abs))
-      work_win = vim.api.nvim_get_current_win()
-    end
-
-    vim.api.nvim_set_current_win(base_win)
-    pcall(vim.cmd, "diffthis")
-    vim.api.nvim_set_current_win(work_win)
-    pcall(vim.cmd, "diffthis")
-    vim.api.nvim_set_current_win(review.list_win)
-  end)
-  review.opening = false
-  if not ok then
-    vim.notify("0x0: review failed: " .. tostring(err):gsub("\n.*", ""), vim.log.levels.ERROR)
-  end
-end
-
 function M:review()
   if not self.checkpoint then
     vim.notify("0x0: no active checkpoint", vim.log.levels.INFO)
@@ -304,56 +196,7 @@ function M:review()
     vim.notify("0x0: no changes since checkpoint", vim.log.levels.INFO)
     return
   end
-
-  local entries = review_entries(self.checkpoint, files)
-  local ns = vim.api.nvim_create_namespace("zxz_review")
-
-  vim.cmd("tabnew")
-  local tabpage = vim.api.nvim_get_current_tabpage()
-  local list_win = vim.api.nvim_get_current_win()
-  local list_buf = vim.api.nvim_get_current_buf()
-  set_scratch_lines(
-    list_buf,
-    "0x0 review",
-    vim.tbl_map(function(entry)
-      return entry.label
-    end, entries),
-    ""
-  )
-  vim.bo[list_buf].filetype = "zxz-review"
-  vim.wo[list_win].number = false
-  vim.wo[list_win].relativenumber = false
-  vim.wo[list_win].signcolumn = "no"
-  vim.api.nvim_win_set_width(list_win, 36)
-
-  local review = {
-    tabpage = tabpage,
-    list_win = list_win,
-    list_buf = list_buf,
-    entries = entries,
-    ns = ns,
-  }
-
-  local open_selected = function()
-    local row = vim.api.nvim_win_get_cursor(list_win)[1]
-    self:_open_review_entry(review, row)
-  end
-
-  vim.keymap.set("n", "<CR>", open_selected, { buffer = list_buf, silent = true, desc = "0x0: review file" })
-  vim.keymap.set("n", "q", function()
-    pcall(vim.cmd, "tabclose")
-  end, { buffer = list_buf, silent = true, desc = "0x0: close review" })
-
-  vim.api.nvim_create_autocmd("CursorMoved", {
-    buffer = list_buf,
-    callback = function()
-      if vim.api.nvim_get_current_win() == list_win then
-        open_selected()
-      end
-    end,
-  })
-
-  self:_open_review_entry(review, 1)
+  require("zxz.edit.review").open_checkpoint(self.checkpoint, { chat = self })
 end
 
 ---Build a row label combining attached-overlay hunk counts and any files

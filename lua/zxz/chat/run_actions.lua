@@ -38,6 +38,23 @@ local function exists_in_ref(root, sha, path)
   return vim.v.shell_error == 0
 end
 
+---@param path string
+---@param content string
+---@return boolean ok, string|nil err
+local function write_disk_file(path, content)
+  local dir = vim.fn.fnamemodify(path, ":h")
+  if vim.fn.isdirectory(dir) == 0 then
+    vim.fn.mkdir(dir, "p")
+  end
+  local f, err = io.open(path, "wb")
+  if not f then
+    return false, err
+  end
+  f:write(content or "")
+  f:close()
+  return true, nil
+end
+
 ---@param root string
 ---@param sha string
 ---@param paths string[]
@@ -45,16 +62,19 @@ end
 local function restore_paths_from(root, sha, paths)
   for _, path in ipairs(paths) do
     if exists_in_ref(root, sha, path) then
-      local out = vim.fn.system({ "git", "-C", root, "checkout", sha, "--", path })
+      local out = vim.fn.system({ "git", "-C", root, "show", sha .. ":" .. path })
       if vim.v.shell_error ~= 0 then
         return false, out
+      end
+      local ok, err = write_disk_file(root .. "/" .. path, out)
+      if not ok then
+        return false, err
       end
     else
       local abs = root .. "/" .. path
       if vim.fn.filereadable(abs) == 1 then
         os.remove(abs)
       end
-      pcall(vim.fn.system, { "git", "-C", root, "rm", "--quiet", "--cached", "--", path })
     end
   end
   return true, nil

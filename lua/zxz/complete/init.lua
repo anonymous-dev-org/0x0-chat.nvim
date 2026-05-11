@@ -208,6 +208,11 @@ function M.dismiss()
   M._cancel()
 end
 
+---@return boolean
+function M.is_visible()
+  return ghost.is_visible()
+end
+
 --- Accept the current completion.
 ---@return boolean
 function M.accept()

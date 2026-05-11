@@ -32,31 +32,12 @@ local function git_with_index(root, index, args)
   return out, vim.v.shell_error
 end
 
----Resolve the path of the existing index so we can seed the temporary one.
----@param root string
----@return string|nil
-local function git_index_path(root)
-  local path = chomp(vim.fn.system({ "git", "-C", root, "rev-parse", "--git-path", "index" }))
-  if vim.v.shell_error ~= 0 or path == "" then
-    return nil
-  end
-  if path:sub(1, 1) ~= "/" then
-    path = root .. "/" .. path
-  end
-  return path
-end
-
 ---Build a tree-ish representing the current working tree (tracked + untracked,
 ---excluding .gitignore entries) using a temp index. Returns the tree SHA or nil.
 ---@param root string
 ---@return string|nil
 local function working_tree_tree(root)
   local tmp_index = vim.fn.tempname()
-  local source_index = git_index_path(root)
-  if source_index and vim.loop.fs_stat(source_index) then
-    local content = vim.fn.readfile(source_index, "b")
-    vim.fn.writefile(content, tmp_index, "b")
-  end
   local _, add_code = git_with_index(root, tmp_index, { "add", "-A" })
   if add_code ~= 0 then
     vim.fn.delete(tmp_index)
@@ -72,6 +53,107 @@ local function working_tree_tree(root)
     return nil
   end
   return tree
+end
+
+local function read_disk_file(path)
+  local f = io.open(path, "rb")
+  if not f then
+    return nil
+  end
+  local content = f:read("*a")
+  f:close()
+  return content
+end
+
+local function write_disk_file(path, content)
+  local dir = vim.fn.fnamemodify(path, ":h")
+  if dir and dir ~= "" and vim.fn.isdirectory(dir) == 0 then
+    vim.fn.mkdir(dir, "p")
+  end
+  local f = io.open(path, "wb")
+  if not f then
+    return false
+  end
+  f:write(content or "")
+  f:close()
+  return true
+end
+
+local function file_mode_at(root, sha, path)
+  local out, code = systemlist({ "git", "-C", root, "ls-tree", sha, "--", path })
+  if code ~= 0 or not out[1] or out[1] == "" then
+    return nil
+  end
+  return out[1]:match("^(%d+)%s+blob%s+")
+end
+
+---@param checkpoint table
+---@param path string
+---@param content string|nil nil removes the path from the checkpoint tree
+---@return boolean ok, string|nil err
+local function replace_file_in_checkpoint(checkpoint, path, content)
+  if not M.is_valid(checkpoint) then
+    return false, "checkpoint invalid"
+  end
+  local tmp_index = vim.fn.tempname()
+  local _, read_code = git_with_index(checkpoint.root, tmp_index, { "read-tree", checkpoint.sha })
+  if read_code ~= 0 then
+    vim.fn.delete(tmp_index)
+    return false, "failed to read checkpoint tree"
+  end
+
+  if content == nil then
+    local _, remove_code = git_with_index(checkpoint.root, tmp_index, { "update-index", "--force-remove", "--", path })
+    if remove_code ~= 0 then
+      vim.fn.delete(tmp_index)
+      return false, "failed to remove " .. path .. " from checkpoint"
+    end
+  else
+    local blob = chomp(system({ "git", "-C", checkpoint.root, "hash-object", "-w", "--stdin" }, content))
+    if vim.v.shell_error ~= 0 or blob == "" then
+      vim.fn.delete(tmp_index)
+      return false, "failed to write blob for " .. path
+    end
+    local mode = file_mode_at(checkpoint.root, checkpoint.sha, path) or "100644"
+    local _, update_code = git_with_index(checkpoint.root, tmp_index, {
+      "update-index",
+      "--add",
+      "--cacheinfo",
+      mode,
+      blob,
+      path,
+    })
+    if update_code ~= 0 then
+      vim.fn.delete(tmp_index)
+      return false, "failed to update checkpoint index for " .. path
+    end
+  end
+
+  local tree = chomp(select(1, git_with_index(checkpoint.root, tmp_index, { "write-tree" })))
+  vim.fn.delete(tmp_index)
+  if tree == "" then
+    return false, "failed to write checkpoint tree"
+  end
+  local sha = chomp(system({
+    "git",
+    "-C",
+    checkpoint.root,
+    "commit-tree",
+    tree,
+    "-p",
+    checkpoint.sha,
+    "-m",
+    "0x0 checkpoint review update",
+  }))
+  if vim.v.shell_error ~= 0 or sha == "" then
+    return false, "failed to commit checkpoint update"
+  end
+  local _, ref_code = systemlist({ "git", "-C", checkpoint.root, "update-ref", checkpoint.ref, sha })
+  if ref_code ~= 0 then
+    return false, "failed to update checkpoint ref"
+  end
+  checkpoint.sha = sha
+  return true, nil
 end
 
 ---@param cwd string
@@ -235,6 +317,32 @@ end
 
 ---@param checkpoint table
 ---@param path string repo-relative path
+---@param content string|nil nil removes the path from the checkpoint tree
+---@return boolean ok, string|nil err
+function M.replace_file(checkpoint, path, content)
+  return replace_file_in_checkpoint(checkpoint, path, content)
+end
+
+---@param checkpoint table
+---@param path string repo-relative path
+---@return boolean ok, string|nil err
+function M.accept_file(checkpoint, path)
+  if not M.is_valid(checkpoint) then
+    return false, "checkpoint invalid"
+  end
+  local abs = checkpoint.root .. "/" .. path
+  local stat = vim.loop.fs_stat(abs)
+  if not stat then
+    return replace_file_in_checkpoint(checkpoint, path, nil)
+  end
+  if stat.type ~= "file" then
+    return false, "cannot accept non-file path " .. path
+  end
+  return replace_file_in_checkpoint(checkpoint, path, read_disk_file(abs) or "")
+end
+
+---@param checkpoint table
+---@param path string repo-relative path
 ---@return boolean ok, string|nil err
 function M.restore_file(checkpoint, path)
   if not M.is_valid(checkpoint) then
@@ -246,9 +354,12 @@ function M.restore_file(checkpoint, path)
     vim.fn.delete(abs)
     return true, nil
   end
-  local _, code = systemlist({ "git", "-C", checkpoint.root, "checkout", checkpoint.ref, "--", path })
+  local content, code = system({ "git", "-C", checkpoint.root, "show", checkpoint.ref .. ":" .. path })
   if code ~= 0 then
-    return false, "git checkout failed for " .. path
+    return false, "git show failed for " .. path
+  end
+  if not write_disk_file(abs, content or "") then
+    return false, "write failed for " .. path
   end
   return true, nil
 end

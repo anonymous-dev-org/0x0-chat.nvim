@@ -3,6 +3,7 @@
 ---@field id string
 ---@field text string
 ---@field status? "active"|"queued"
+---@field context_summary? string[]
 
 ---@class zxz.history.AgentMessage
 ---@field type "agent"|"thought"
@@ -18,6 +19,7 @@
 ---@field content? table[]
 ---@field locations? table[]
 ---@field expanded? boolean
+---@field edit_events? table[]
 
 ---@class zxz.history.Permission
 ---@field type "permission"
@@ -59,11 +61,12 @@ end
 
 ---@param text string
 ---@param status? "active"|"queued"
+---@param context_summary? string[]
 ---@return string id
-function History:add_user(text, status)
+function History:add_user(text, status, context_summary)
   local id = tostring(self.next_id)
   self.next_id = self.next_id + 1
-  self:add({ type = "user", id = id, text = text, status = status or "active" })
+  self:add({ type = "user", id = id, text = text, status = status or "active", context_summary = context_summary })
   return id
 end
 
@@ -101,6 +104,24 @@ function History:update_tool_call(tool_call_id, patch)
       return
     end
   end
+end
+
+---@param tool_call_id string
+---@param event table
+---@return boolean
+function History:append_tool_edit_event(tool_call_id, event)
+  if not tool_call_id or not event then
+    return false
+  end
+  for i = #self.messages, 1, -1 do
+    local msg = self.messages[i]
+    if msg.type == "tool_call" and msg.tool_call_id == tool_call_id then
+      msg.edit_events = msg.edit_events or {}
+      msg.edit_events[#msg.edit_events + 1] = event
+      return true
+    end
+  end
+  return false
 end
 
 ---@param tool_call_id string

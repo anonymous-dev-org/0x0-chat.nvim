@@ -81,6 +81,20 @@ describe("reference_mentions @diagnostics", function()
     assert.are.equal("terminal", mentions[5].type)
   end)
 
+  it("summarizes explicit context mentions for transcript provenance", function()
+    local labels = ReferenceMentions.summary(
+      "use @fetch:https://example.com/docs and @diff:main plus @rule:project @thread:abc123 @terminal",
+      vim.fn.getcwd()
+    )
+    assert.are.same({
+      "@fetch:https://example.com/docs",
+      "@diff:main",
+      "@rule:project",
+      "@thread:abc123",
+      "@terminal",
+    }, labels)
+  end)
+
   it("does not match @-tokens embedded in emails or mid-word", function()
     -- bob@example.com → no mention.
     -- README.md@v2 → no mention (mid-word @).

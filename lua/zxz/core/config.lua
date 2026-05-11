@@ -124,6 +124,10 @@ M.defaults = {
     recent = false,
   },
   code_actions = {},
+  inline_diff = {
+    streaming_refresh = true,
+    streaming_refresh_delay_ms = 40,
+  },
   detached_runs_max = 4,
   test_command = nil, -- auto-detected per project; override per-setup if needed
   test_command_timeout_ms = 5000, -- @test-output kill-on-timeout (T2.1, T2.7)

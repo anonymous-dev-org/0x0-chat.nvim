@@ -1,3 +1,5 @@
+local helpers = require("tests.helpers")
+local Checkpoint = require("zxz.core.checkpoint")
 local InlineDiff = require("zxz.edit.inline_diff")
 
 local function fixture(diff)
@@ -24,6 +26,8 @@ index 0000..1111 100644
     local h = f.hunks[1]
     assert.are.same({ "old" }, h.old_lines)
     assert.are.same({ "new" }, h.new_lines)
+    assert.are.same({ "keep", "old", "tail" }, h.old_block)
+    assert.are.same({ "keep", "new", "tail" }, h.new_block)
     assert.are.equal(1, h.old_start)
     assert.are.equal(3, h.old_count)
     assert.are.equal(1, h.new_start)
@@ -232,5 +236,40 @@ describe("inline_diff accept/reject", function()
     vim.bo[bufnr].buftype = "nofile"
     InlineDiff.reject_hunk_at_cursor()
     assert.are.same({ "keep", "old", "tail" }, vim.api.nvim_buf_get_lines(bufnr, 0, -1, false))
+  end)
+end)
+
+describe("inline_diff streaming refresh", function()
+  local root
+  local bufnr
+
+  after_each(function()
+    InlineDiff.detach_all()
+    if bufnr and vim.api.nvim_buf_is_valid(bufnr) then
+      vim.api.nvim_buf_delete(bufnr, { force = true })
+    end
+    helpers.cleanup(root)
+  end)
+
+  it("debounces refreshes for open buffers without moving the cursor", function()
+    root = vim.loop.fs_realpath(helpers.make_repo({ ["a.txt"] = "old\nsecond\nthird\n" }))
+    local cp = assert(Checkpoint.snapshot(root))
+    bufnr = vim.api.nvim_create_buf(true, false)
+    vim.bo[bufnr].swapfile = false
+    vim.api.nvim_buf_set_name(bufnr, root .. "/a.txt")
+    vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, { "old", "second", "third" })
+    vim.api.nvim_set_current_buf(bufnr)
+    vim.api.nvim_win_set_cursor(0, { 3, 0 })
+    helpers.write_file(root .. "/a.txt", "new\nsecond\nthird\n")
+
+    InlineDiff.refresh_path_streaming(cp, root .. "/a.txt", 1)
+
+    local ok = vim.wait(200, function()
+      return #InlineDiff.list_attached() == 1
+    end, 10)
+    assert.is_true(ok)
+    local attached = InlineDiff.list_attached()
+    assert.are.equal("a.txt", attached[1].path)
+    assert.are.same({ 3, 0 }, vim.api.nvim_win_get_cursor(0))
   end)
 end)

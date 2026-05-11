@@ -105,7 +105,7 @@ function M.setup(opts)
 
   vim.api.nvim_create_user_command("ZxzChatReview", function()
     require("zxz.chat.chat").review()
-  end, { desc = "Review chat changes in vimdiff against the turn checkpoint" })
+  end, { desc = "Review chat changes in the native 0x0 review buffer" })
 
   vim.api.nvim_create_user_command("ZxzReview", function()
     require("zxz.chat.chat").review()
@@ -118,9 +118,37 @@ function M.setup(opts)
     end
     require("zxz.chat.chat").run_review(id)
   end, {
-    desc = "Open a finished Run in diffview (defaults to the most recent run)",
+    desc = "Open a finished Run in the native 0x0 review buffer",
     nargs = "?",
   })
+
+  vim.api.nvim_create_user_command("ZxzAccept", function()
+    require("zxz.edit.verbs").accept_current()
+  end, { desc = "0x0: accept the current AI suggestion, hunk, or review file" })
+
+  vim.api.nvim_create_user_command("ZxzReject", function()
+    require("zxz.edit.verbs").reject_current()
+  end, { desc = "0x0: reject the current AI suggestion, hunk, or review file" })
+
+  vim.api.nvim_create_user_command("ZxzAcceptFile", function()
+    require("zxz.edit.verbs").accept_file()
+  end, { desc = "0x0: accept the current AI-changed file" })
+
+  vim.api.nvim_create_user_command("ZxzRejectFile", function()
+    require("zxz.edit.verbs").reject_file()
+  end, { desc = "0x0: reject the current AI-changed file" })
+
+  vim.api.nvim_create_user_command("ZxzUndoReject", function()
+    require("zxz.edit.verbs").undo_reject()
+  end, { desc = "0x0: restore the last rejected AI change" })
+
+  vim.api.nvim_create_user_command("ZxzAcceptRun", function()
+    require("zxz.edit.verbs").accept_run()
+  end, { desc = "0x0: accept the active review run" })
+
+  vim.api.nvim_create_user_command("ZxzRejectRun", function()
+    require("zxz.edit.verbs").reject_run()
+  end, { desc = "0x0: reject the active review run" })
 
   vim.api.nvim_create_user_command("ZxzChatRuns", function(args)
     require("zxz.chat.chat").runs_picker(args.bang)

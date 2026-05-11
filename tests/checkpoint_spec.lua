@@ -94,6 +94,22 @@ describe("checkpoint", function()
     assert.is_nil(helpers.read_file(root .. "/new.txt"))
   end)
 
+  it("restore_file rewinds the worktree without changing the index", function()
+    local cp = assert(Checkpoint.snapshot(root))
+    helpers.write_file(root .. "/src/a.lua", "staged\n")
+    vim.fn.system({ "git", "-C", root, "add", "src/a.lua" })
+    assert.are.equal(0, vim.v.shell_error)
+    helpers.write_file(root .. "/src/a.lua", "worktree\n")
+
+    local ok = Checkpoint.restore_file(cp, "src/a.lua")
+
+    assert.is_true(ok)
+    assert.are.equal("return 1\n", helpers.read_file(root .. "/src/a.lua"))
+    local staged = vim.fn.system({ "git", "-C", root, "show", ":src/a.lua" })
+    assert.are.equal(0, vim.v.shell_error)
+    assert.are.equal("staged\n", staged)
+  end)
+
   it("restore_all rewinds every changed file", function()
     local cp = assert(Checkpoint.snapshot(root))
     helpers.write_file(root .. "/src/a.lua", "return 2\n")

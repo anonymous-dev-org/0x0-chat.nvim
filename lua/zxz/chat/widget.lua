@@ -625,6 +625,15 @@ local function tool_virt_lines(tool)
   local class = tool_policy.classify(tool)
   local virt = {}
 
+  for _, event in ipairs(tool.edit_events or {}) do
+    local path = event.path and vim.fn.fnamemodify(event.path, ":~:.") or "?"
+    table.insert(virt, {
+      { "  ✎ ", "Comment" },
+      { path, "Identifier" },
+      { (" +%d/-%d"):format(event.additions or 0, event.deletions or 0), "Comment" },
+    })
+  end
+
   local preview = tool_policy.input_preview(class, tool.raw_input)
   if preview then
     table.insert(virt, { { "  ", nil }, { preview, "Comment" } })
@@ -776,6 +785,13 @@ local function user_header(msg)
   return "## User"
 end
 
+local function user_context_line(msg)
+  if type(msg.context_summary) ~= "table" or #msg.context_summary == 0 then
+    return nil
+  end
+  return "Context: " .. table.concat(msg.context_summary, ", ")
+end
+
 ---@param msg table
 ---@return string|nil hl_group
 local function line_hl_for(msg)
@@ -859,6 +875,10 @@ function ChatWidget:render()
       end
       local header_index = #lines + 1
       lines[#lines + 1] = user_header(msg)
+      local context_line = user_context_line(msg)
+      if context_line then
+        lines[#lines + 1] = context_line
+      end
       lines[#lines + 1] = ""
       for _, line in ipairs(vim.split(msg.text or "", "\n", { plain = true })) do
         lines[#lines + 1] = line

@@ -301,6 +301,38 @@ function M.parse(input, cwd)
   return mentions
 end
 
+local function summary_label(mention)
+  if mention.type == "file" then
+    return mention.raw or ("@" .. mention.path)
+  elseif mention.type == "range" then
+    return mention.raw or ("@" .. mention.path .. "#L" .. tostring(mention.start_line))
+  elseif mention.type == "diagnostics" then
+    return mention.raw or ("@diagnostics:" .. tostring(mention.severity_label or "all"))
+  elseif mention.type == "lsp" then
+    return mention.raw or ("@" .. tostring(mention.lsp_kind))
+  elseif mention.type == "branch_diff" then
+    return mention.raw or ("@diff:" .. tostring(mention.base))
+  elseif mention.type == "fetch" then
+    return mention.raw or ("@fetch:" .. tostring(mention.url))
+  elseif mention.type == "rule" then
+    return mention.raw or ("@rule:" .. tostring(mention.name))
+  elseif mention.type == "thread" then
+    return mention.raw or ("@thread:" .. tostring(mention.id))
+  end
+  return mention.raw or ("@" .. tostring(mention.type))
+end
+
+---@param input string
+---@param cwd? string
+---@return string[]
+function M.summary(input, cwd)
+  local labels = {}
+  for _, mention in ipairs(M.parse(input or "", cwd)) do
+    labels[#labels + 1] = summary_label(mention)
+  end
+  return labels
+end
+
 local function git_branch(cwd)
   local out = vim.fn.systemlist({ "git", "-C", cwd or vim.fn.getcwd(), "symbolic-ref", "--quiet", "--short", "HEAD" })
   if vim.v.shell_error ~= 0 then

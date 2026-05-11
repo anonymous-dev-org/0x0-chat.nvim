@@ -6,6 +6,7 @@
 local acp_client = require("zxz.core.acp_client")
 local Checkpoint = require("zxz.core.checkpoint")
 local config = require("zxz.core.config")
+local EditEvents = require("zxz.core.edit_events")
 local History = require("zxz.core.history")
 local Reconcile = require("zxz.core.reconcile")
 local Runs = require("zxz.chat.runs")
@@ -75,6 +76,7 @@ local function handle_update(run, update)
     if not update.toolCallId then
       return
     end
+    run.active_tool_call_id = update.toolCallId
     run.history:add({
       type = "tool_call",
       tool_call_id = update.toolCallId,
@@ -167,11 +169,26 @@ local function fs_write(run, params, respond)
     respond({ code = -32602, message = "invalid path" })
     return
   end
+  local before_content = EditEvents.read_file(abs)
   local ok, err = run.reconcile:write_for_agent(abs, params.content or "")
   if not ok then
     run:_run_record_conflict(abs, err or "write rejected")
     respond({ code = -32000, message = err or "write rejected" })
     return
+  end
+  local tool_call_id = params.toolCallId or params.tool_call_id or run.active_tool_call_id
+  local event = EditEvents.from_write({
+    root = run.repo_root,
+    path = params.path,
+    abs_path = abs,
+    run_id = run.current_run and run.current_run.run_id,
+    tool_call_id = tool_call_id,
+    before_content = before_content,
+    after_content = params.content or "",
+  })
+  if event then
+    run:_run_record_edit_event(event)
+    run.history:append_tool_edit_event(tool_call_id, event)
   end
   respond(nil)
 end

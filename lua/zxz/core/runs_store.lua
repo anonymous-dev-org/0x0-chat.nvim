@@ -15,7 +15,7 @@ local function path_for(id)
   return dir() .. "/" .. id .. ".json"
 end
 
----@param run table { run_id, thread_id, agent, prompt_summary, start_ref, end_ref?, tool_refs?, tool_calls?, files_touched?, status, started_at, ended_at? }
+---@param run table { run_id, thread_id, agent, prompt_summary, start_ref, end_ref?, tool_refs?, tool_calls?, edit_events?, files_touched?, status, started_at, ended_at? }
 function M.save(run)
   if not run or not run.run_id then
     return

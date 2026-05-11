@@ -1,4 +1,5 @@
 local Checkpoint = require("zxz.core.checkpoint")
+local EditEvents = require("zxz.core.edit_events")
 
 local api = vim.api
 local M = {}
@@ -12,6 +13,9 @@ local ns = api.nvim_create_namespace("zxz_inline_diff")
 ---@field new_count integer
 ---@field old_lines string[]
 ---@field new_lines string[]
+---@field old_block string[]
+---@field new_block string[]
+---@field diff_lines string[]
 ---@field type "modify"|"add"|"delete"
 
 ---@class zxz.InlineFile
@@ -31,6 +35,7 @@ local accepted_signatures = {}
 
 -- Active checkpoint set by the chat module so autocmds can refresh on the fly.
 local active_checkpoint = nil
+local streaming_refreshes = {}
 
 -- Hooks invoked when the set of attached buffers / hunks changes. Used by the
 -- chat widget to update its pending-diffs winbar segment.
@@ -112,16 +117,25 @@ function M.parse(text)
             new_count = nc == "" and 1 or (tonumber(nc) or 0),
             old_lines = {},
             new_lines = {},
+            old_block = {},
+            new_block = {},
+            diff_lines = { line },
           }
           table.insert(current.hunks, cur_hunk)
         end
       elseif cur_hunk and #line > 0 then
         local p = line:sub(1, 1)
         local body = line:sub(2)
+        cur_hunk.diff_lines[#cur_hunk.diff_lines + 1] = line
         if p == "-" then
           table.insert(cur_hunk.old_lines, body)
+          table.insert(cur_hunk.old_block, body)
         elseif p == "+" then
           table.insert(cur_hunk.new_lines, body)
+          table.insert(cur_hunk.new_block, body)
+        elseif p == " " then
+          table.insert(cur_hunk.old_block, body)
+          table.insert(cur_hunk.new_block, body)
         end
       end
     end
@@ -198,17 +212,20 @@ end
 local function bind_keymaps(bufnr)
   local opts = { buffer = bufnr, silent = true, nowait = true }
   vim.keymap.set("n", "<localleader>a", function()
-    M.accept_hunk_at_cursor()
+    require("zxz.edit.verbs").accept_current()
   end, vim.tbl_extend("force", opts, { desc = "0x0: accept hunk" }))
   vim.keymap.set("n", "<localleader>r", function()
-    M.reject_hunk_at_cursor()
+    require("zxz.edit.verbs").reject_current()
   end, vim.tbl_extend("force", opts, { desc = "0x0: reject hunk" }))
   vim.keymap.set("n", "<localleader>A", function()
-    M.accept_file()
+    require("zxz.edit.verbs").accept_file()
   end, vim.tbl_extend("force", opts, { desc = "0x0: accept all hunks in file" }))
   vim.keymap.set("n", "<localleader>R", function()
-    M.reject_file()
+    require("zxz.edit.verbs").reject_file()
   end, vim.tbl_extend("force", opts, { desc = "0x0: reject all hunks in file" }))
+  vim.keymap.set("n", "<localleader>u", function()
+    require("zxz.edit.verbs").undo_reject()
+  end, vim.tbl_extend("force", opts, { desc = "0x0: undo last reject" }))
   vim.keymap.set("n", "]h", function()
     M.next_hunk()
   end, vim.tbl_extend("force", opts, { desc = "0x0: next hunk" }))
@@ -235,6 +252,7 @@ local function unbind_keymaps(bufnr)
     "<localleader>r",
     "<localleader>A",
     "<localleader>R",
+    "<localleader>u",
     "]h",
     "[h",
     "]H",
@@ -280,6 +298,29 @@ function M.detach(bufnr)
   end
 end
 
+local function save_window_views(bufnr)
+  local views = {}
+  for _, winid in ipairs(vim.fn.win_findbuf(bufnr)) do
+    if api.nvim_win_is_valid(winid) then
+      local ok, view = pcall(api.nvim_win_call, winid, vim.fn.winsaveview)
+      if ok and view then
+        views[#views + 1] = { winid = winid, view = view }
+      end
+    end
+  end
+  return views
+end
+
+local function restore_window_views(views, bufnr)
+  for _, item in ipairs(views or {}) do
+    if api.nvim_win_is_valid(item.winid) and api.nvim_win_get_buf(item.winid) == bufnr then
+      pcall(api.nvim_win_call, item.winid, function()
+        vim.fn.winrestview(item.view)
+      end)
+    end
+  end
+end
+
 ---Reload the buffer from disk if unmodified, then re-place the overlay using
 ---the given checkpoint.
 ---@param checkpoint table
@@ -292,6 +333,7 @@ function M.refresh_path(checkpoint, abs_path)
   if bufnr == -1 or not api.nvim_buf_is_valid(bufnr) then
     return
   end
+  local views = save_window_views(bufnr)
   if not vim.bo[bufnr].modified then
     pcall(vim.cmd, "checktime " .. bufnr)
   end
@@ -304,8 +346,32 @@ function M.refresh_path(checkpoint, abs_path)
   local file = files[rel]
   if file then
     file.abspath = abs_path
+    EditEvents.annotate_chunks({ { path = rel, parsed = file } }, checkpoint.turn_id)
   end
   M.attach(bufnr, file, checkpoint)
+  restore_window_views(views, bufnr)
+end
+
+---Debounced refresh used by host-mediated file writes while the agent is still
+---running. Multiple rapid writes to the same path coalesce into one overlay
+---refresh, so the UI can track streaming edits without excessive git diffs.
+---@param checkpoint table
+---@param abs_path string
+---@param delay_ms? integer
+function M.refresh_path_streaming(checkpoint, abs_path, delay_ms)
+  if not checkpoint or not abs_path or abs_path == "" then
+    return
+  end
+  local key = (checkpoint.ref or "?") .. "\n" .. abs_path
+  streaming_refreshes[key] = { checkpoint = checkpoint, abs_path = abs_path }
+  vim.defer_fn(function()
+    local pending = streaming_refreshes[key]
+    if not pending then
+      return
+    end
+    streaming_refreshes[key] = nil
+    M.refresh_path(pending.checkpoint, pending.abs_path)
+  end, delay_ms or 40)
 end
 
 ---Refresh every buffer that currently has an attached overlay.
@@ -416,9 +482,10 @@ function M._refresh_focused_hunk(bufnr)
   pcall(api.nvim_buf_set_extmark, bufnr, hint_ns, hint_line, 0, {
     virt_text = {
       {
-        (" [%d/%d] %sa accept · %sr reject · %sA accept file · %sm attach"):format(
+        (" [%d/%d] %sa accept · %sr reject · %sA accept file · %su undo reject · %sm attach"):format(
           idx,
           #state.file.hunks,
+          lc,
           lc,
           lc,
           lc,
@@ -487,6 +554,29 @@ function M.current_hunk_reference()
   }
 end
 
+---@param bufnr? integer
+---@return boolean
+function M.has_attached(bufnr)
+  bufnr = bufnr or api.nvim_get_current_buf()
+  local state = buf_state[bufnr]
+  return state ~= nil and state.file ~= nil and #(state.file.hunks or {}) > 0
+end
+
+---@param checkpoint table
+---@param path string
+function M.accept_path(checkpoint, path)
+  if not checkpoint or not path or path == "" then
+    return false
+  end
+  local ok, err = require("zxz.edit.ledger").accept_file(checkpoint, path)
+  if not ok then
+    vim.notify("0x0: accept failed: " .. (err or "unknown"), vim.log.levels.ERROR)
+    return false
+  end
+  M.refresh_path(checkpoint, checkpoint.root .. "/" .. path)
+  return true
+end
+
 function M.next_hunk()
   local bufnr = api.nvim_get_current_buf()
   local state = buf_state[bufnr]
@@ -527,6 +617,15 @@ function M.accept_hunk_at_cursor()
   local state, idx, hunk = find_hunk_at(bufnr)
   if not state or not idx then
     vim.notify("0x0: no hunk under cursor", vim.log.levels.INFO)
+    return
+  end
+  if state.checkpoint then
+    local ok, err = require("zxz.edit.ledger").accept_hunk(state.checkpoint, state.file.path, hunk)
+    if not ok then
+      vim.notify("0x0: accept failed: " .. (err or "unknown"), vim.log.levels.ERROR)
+      return
+    end
+    M.refresh_path(state.checkpoint, state.file.abspath or vim.api.nvim_buf_get_name(bufnr))
     return
   end
   -- Memoise so the next refresh against the unchanged baseline filters it out.
@@ -610,14 +709,24 @@ function M.reject_hunk_at_cursor()
       end)
     end)
   end
-  -- Replace [new_start, new_start+new_count) with hunk.old_lines.
+  if state.checkpoint then
+    local ok, err = require("zxz.edit.ledger").reject_hunk(state.checkpoint, state.file.path, hunk)
+    if not ok then
+      vim.notify("0x0: reject failed: " .. (err or "unknown"), vim.log.levels.ERROR)
+      return
+    end
+    pcall(vim.cmd, "checktime " .. bufnr)
+    M.refresh_path(state.checkpoint, state.file.abspath or vim.api.nvim_buf_get_name(bufnr))
+    return
+  end
+  -- Replace [new_start, new_start+new_count) with the old hunk block.
   local s = hunk.new_start - 1
   local e = s + hunk.new_count
   if hunk.new_count == 0 then
     s = hunk.new_start
     e = s
   end
-  pcall(api.nvim_buf_set_lines, bufnr, s, e, false, hunk.old_lines)
+  pcall(api.nvim_buf_set_lines, bufnr, s, e, false, hunk.old_block or hunk.old_lines)
   pcall(function()
     api.nvim_buf_call(bufnr, function()
       vim.cmd("silent! write")
@@ -636,6 +745,15 @@ function M.accept_file()
     vim.notify("0x0: no hunks attached to this buffer", vim.log.levels.INFO)
     return
   end
+  if state.checkpoint then
+    local ok, err = require("zxz.edit.ledger").accept_file(state.checkpoint, state.file.path)
+    if not ok then
+      vim.notify("0x0: accept_file failed: " .. (err or "unknown"), vim.log.levels.ERROR)
+      return
+    end
+    M.refresh_path(state.checkpoint, state.file.abspath or vim.api.nvim_buf_get_name(bufnr))
+    return
+  end
   for _, hunk in ipairs(state.file.hunks) do
     mark_accepted(state.file.path, hunk)
   end
@@ -652,7 +770,7 @@ function M.reject_file()
   end
   if state.checkpoint then
     local rel = state.file.path
-    local ok, err = require("zxz.core.checkpoint").restore_file(state.checkpoint, rel)
+    local ok, err = require("zxz.edit.ledger").reject_file(state.checkpoint, rel)
     if not ok then
       vim.notify("0x0: reject_file failed: " .. (err or "unknown"), vim.log.levels.ERROR)
       return

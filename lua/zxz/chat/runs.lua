@@ -4,6 +4,7 @@
 -- the chat thread store.
 
 local Checkpoint = require("zxz.core.checkpoint")
+local EditEvents = require("zxz.core.edit_events")
 local RunsStore = require("zxz.core.runs_store")
 
 local M = {}
@@ -50,6 +51,7 @@ function M:_start_run(prompt)
     end_sha = nil,
     tool_refs = {},
     tool_calls = {},
+    edit_events = {},
     files_touched = {},
     status = "running",
     started_at = os.time(),
@@ -99,6 +101,17 @@ function M:_run_update_tool_call(tool_call_id, patch)
       return
     end
   end
+end
+
+---@param event table
+function M:_run_record_edit_event(event)
+  local run = self.current_run
+  if not run or not event then
+    return
+  end
+  EditEvents.append_to_run(run, event)
+  EditEvents.record(event)
+  RunsStore.save(run)
 end
 
 ---Append a reconcile conflict observed during the active Run.

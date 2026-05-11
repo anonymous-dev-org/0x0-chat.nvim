@@ -27,6 +27,7 @@ function M:_handle_update(update)
     if self.in_flight then
       self:_set_turn_activity("waiting", "Working")
     end
+    self.active_tool_call_id = update.toolCallId
     self.history:add({
       type = "tool_call",
       tool_call_id = update.toolCallId,
@@ -125,15 +126,16 @@ function M:submit()
     return
   end
   self.widget:push_history(prompt)
+  local context_summary = ReferenceMentions.summary(prompt, self:_session_cwd())
   if self.in_flight then
-    local id = self.history:add_user(prompt, "queued")
+    local id = self.history:add_user(prompt, "queued", context_summary)
     table.insert(self.queued_prompts, { id = id, text = prompt })
     self.widget:clear_input()
     self:_set_turn_activity(self.widget.activity_state or "waiting", self.widget.activity_label or "Working")
     self.widget:render()
     return
   end
-  local id = self.history:add_user(prompt, "active")
+  local id = self.history:add_user(prompt, "active", context_summary)
   self:_maybe_generate_title(prompt)
   self:_submit_prompt(prompt, id)
 end
@@ -292,12 +294,13 @@ function M:submit_prompt(prompt, opts)
   if opts.headless then
     self.headless = true
   end
+  local context_summary = ReferenceMentions.summary(prompt, self:_session_cwd())
   if self.in_flight then
-    local id = self.history:add_user(prompt, "queued")
+    local id = self.history:add_user(prompt, "queued", context_summary)
     table.insert(self.queued_prompts, { id = id, text = prompt })
     return
   end
-  local id = self.history:add_user(prompt, "active")
+  local id = self.history:add_user(prompt, "active", context_summary)
   self:_maybe_generate_title(prompt)
   self:_submit_prompt(prompt, id)
 end

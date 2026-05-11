@@ -71,7 +71,9 @@ local function format_tool(tool)
       duration = (" %ds"):format(d)
     end
   end
-  return ("%s %s %-9s %s%s"):format(icon, kind_icon, tool.kind or "tool", title, duration)
+  local edits = #(tool.edit_event_ids or {})
+  local edit_label = edits > 0 and (" · %d edit%s"):format(edits, edits == 1 and "" or "s") or ""
+  return ("%s %s %-9s %s%s%s"):format(icon, kind_icon, tool.kind or "tool", title, duration, edit_label)
 end
 
 ---@param run_id? string
