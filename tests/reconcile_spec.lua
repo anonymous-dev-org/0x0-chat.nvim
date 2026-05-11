@@ -1,6 +1,6 @@
 local helpers = require("tests.helpers")
-local Reconcile = require("zeroxzero.reconcile")
-local Checkpoint = require("zeroxzero.checkpoint")
+local Reconcile = require("zxz.core.reconcile")
+local Checkpoint = require("zxz.core.checkpoint")
 
 describe("reconcile", function()
   local root, cp

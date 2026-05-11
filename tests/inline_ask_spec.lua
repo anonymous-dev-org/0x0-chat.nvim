@@ -1,4 +1,4 @@
-local InlineAsk = require("zeroxzero.inline_ask")
+local InlineAsk = require("zxz.edit.inline_ask")
 
 describe("inline_ask", function()
   it("builds a user prompt that begins with the read-only system contract", function()
@@ -21,7 +21,7 @@ describe("inline_ask", function()
   end)
 
   it("permission handler returns an option-id string (not a table)", function()
-    local Ephemeral = require("zeroxzero.chat.ephemeral")
+    local Ephemeral = require("zxz.chat.ephemeral")
     -- The handlers are constructed inside run_inline_ask; rebuild the
     -- handler inline for testing purposes by exercising the same logic.
     local captured

@@ -1,4 +1,4 @@
-local ReferenceMentions = require("zeroxzero.reference_mentions")
+local ReferenceMentions = require("zxz.context.reference_mentions")
 
 describe("reference_mentions @diagnostics", function()
   it("parses @diagnostics as a diagnostics mention with no severity filter", function()

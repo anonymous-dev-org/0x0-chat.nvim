@@ -1,5 +1,5 @@
 local helpers = require("tests.helpers")
-local Checkpoint = require("zeroxzero.checkpoint")
+local Checkpoint = require("zxz.core.checkpoint")
 
 describe("checkpoint", function()
   local root
@@ -152,7 +152,7 @@ describe("checkpoint", function()
       root,
       "for-each-ref",
       "--format=%(refname)",
-      "refs/zeroxzero/checkpoints/",
+      "refs/0x0/checkpoints/",
     })
     assert.are.equal(2, #remaining)
   end)

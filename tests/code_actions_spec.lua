@@ -1,5 +1,5 @@
-local CodeActions = require("zeroxzero.code_actions")
-local config = require("zeroxzero.config")
+local CodeActions = require("zxz.edit.code_actions")
+local config = require("zxz.core.config")
 
 describe("code_actions", function()
   it("ships the default action set", function()

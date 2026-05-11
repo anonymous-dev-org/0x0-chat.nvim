@@ -10,7 +10,7 @@ describe("chat orchestrator", function()
 
   before_each(function()
     repo = vim.loop.fs_realpath(helpers.make_repo({ ["a.txt"] = "alpha\n" }))
-    M = require("zeroxzero.chat")
+    M = require("zxz.chat.chat")
   end)
 
   after_each(function()
@@ -56,12 +56,12 @@ describe("chat orchestrator", function()
   end)
 
   it("registers the run review commands", function()
-    require("zeroxzero").setup()
+    require("zxz").setup()
     local commands = vim.api.nvim_get_commands({})
-    assert.is_truthy(commands.ZeroChatRuns)
-    assert.is_truthy(commands.ZeroChatRunReview)
-    assert.is_truthy(commands.ZeroChatRunAccept)
-    assert.is_truthy(commands.ZeroChatRunReject)
+    assert.is_truthy(commands.ZxzChatRuns)
+    assert.is_truthy(commands.ZxzChatRunReview)
+    assert.is_truthy(commands.ZxzChatRunAccept)
+    assert.is_truthy(commands.ZxzChatRunReject)
   end)
 
   it("submit on an empty input only warns, does not throw", function()
@@ -86,8 +86,8 @@ end)
 
 describe("chat widget rendering", function()
   it("uses one Agent heading for a run across tool loops", function()
-    local History = require("zeroxzero.history")
-    local ChatWidget = require("zeroxzero.chat_widget")
+    local History = require("zxz.core.history")
+    local ChatWidget = require("zxz.chat.widget")
     local history = History.new()
     vim.cmd("tabnew")
     local widget = ChatWidget.new(vim.api.nvim_get_current_tabpage(), history, function() end, function() end)
@@ -119,8 +119,8 @@ describe("chat widget rendering", function()
   end)
 
   it("shows working state in the transcript footer", function()
-    local History = require("zeroxzero.history")
-    local ChatWidget = require("zeroxzero.chat_widget")
+    local History = require("zxz.core.history")
+    local ChatWidget = require("zxz.chat.widget")
     local history = History.new()
     vim.cmd("tabnew")
     local widget = ChatWidget.new(vim.api.nvim_get_current_tabpage(), history, function() end, function() end)
@@ -134,7 +134,7 @@ describe("chat widget rendering", function()
     assert.is_nil(transcript_winbar:find("Working", 1, true))
 
     local namespaces = vim.api.nvim_get_namespaces()
-    local marks = vim.api.nvim_buf_get_extmarks(widget.transcript_buf, namespaces.zeroxzero_chat_widget, 0, -1, {
+    local marks = vim.api.nvim_buf_get_extmarks(widget.transcript_buf, namespaces.zxz_chat_widget, 0, -1, {
       details = true,
     })
     local footer = nil
@@ -152,8 +152,8 @@ describe("chat widget rendering", function()
   end)
 
   it("keeps the input clean and suppresses insert-mode completion noise", function()
-    local History = require("zeroxzero.history")
-    local ChatWidget = require("zeroxzero.chat_widget")
+    local History = require("zxz.core.history")
+    local ChatWidget = require("zxz.chat.widget")
     local history = History.new()
     vim.cmd("tabnew")
     local widget = ChatWidget.new(vim.api.nvim_get_current_tabpage(), history, function() end, function() end)
@@ -176,9 +176,9 @@ describe("chat widget rendering", function()
   end)
 
   it("accepts @ file mentions from the owned dropdown", function()
-    local History = require("zeroxzero.history")
-    local ChatWidget = require("zeroxzero.chat_widget")
-    local file_completion = require("zeroxzero.file_completion")
+    local History = require("zxz.core.history")
+    local ChatWidget = require("zxz.chat.widget")
+    local file_completion = require("zxz.context.file_completion")
     local repo = vim.loop.fs_realpath(helpers.make_repo({
       ["src/main.lua"] = "print('ok')\n",
       ["src/worker.lua"] = "return {}\n",

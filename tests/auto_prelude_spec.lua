@@ -1,4 +1,4 @@
-local AutoPrelude = require("zeroxzero.context.auto_prelude")
+local AutoPrelude = require("zxz.context.auto_prelude")
 
 describe("auto_prelude", function()
   it("returns nil when nothing is enabled", function()

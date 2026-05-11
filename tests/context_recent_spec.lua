@@ -1,4 +1,4 @@
-local Recent = require("zeroxzero.context.recent")
+local Recent = require("zxz.context.recent")
 
 describe("context.recent ring", function()
   before_each(function()

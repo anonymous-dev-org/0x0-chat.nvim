@@ -1,5 +1,5 @@
-local Registry = require("zeroxzero.run_registry")
-local config = require("zeroxzero.config")
+local Registry = require("zxz.core.run_registry")
+local config = require("zxz.core.config")
 
 describe("run_registry", function()
   it("rejects spawn with an empty prompt", function()
@@ -25,7 +25,7 @@ describe("run_registry", function()
 end)
 
 describe("fs_bridge.resolve_path", function()
-  local FsBridge = require("zeroxzero.chat.fs_bridge")
+  local FsBridge = require("zxz.chat.fs_bridge")
 
   it("returns absolute paths as-is", function()
     assert.are.equal("/abs/path/file.lua", FsBridge.resolve_path("/repo", "/abs/path/file.lua"))

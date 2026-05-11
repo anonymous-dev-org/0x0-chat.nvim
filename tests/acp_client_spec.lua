@@ -1,5 +1,5 @@
 -- Validate ACP client timeout + retry behavior using a fake stdio transport.
--- We monkey-patch zeroxzero.acp_transport.create() so the real subprocess
+-- We monkey-patch zxz.acp_transport.create() so the real subprocess
 -- machinery never runs; the fake transport just buffers outbound JSON-RPC
 -- lines for inspection and replays whatever the test wants on inbound.
 
@@ -22,7 +22,7 @@ local function fake_transport(state)
 end
 
 local function with_fake_transport(fn)
-  local transport_mod = require("zeroxzero.acp_transport")
+  local transport_mod = require("zxz.core.acp_transport")
   local saved = transport_mod.create
   local state = { sent = {} }
   transport_mod.create = function(_, callbacks)
@@ -37,8 +37,8 @@ local function with_fake_transport(fn)
 end
 
 local function reload_client()
-  package.loaded["zeroxzero.acp_client"] = nil
-  return require("zeroxzero.acp_client")
+  package.loaded["zxz.core.acp_client"] = nil
+  return require("zxz.core.acp_client")
 end
 
 local function decode_last(state)
@@ -66,7 +66,7 @@ describe("acp_client", function()
   local config
 
   before_each(function()
-    config = require("zeroxzero.config")
+    config = require("zxz.core.config")
     config.setup()
   end)
 

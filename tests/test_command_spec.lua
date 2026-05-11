@@ -1,6 +1,6 @@
 local helpers = require("tests.helpers")
-local TestCommand = require("zeroxzero.context.test_command")
-local config = require("zeroxzero.config")
+local TestCommand = require("zxz.context.test_command")
+local config = require("zxz.core.config")
 
 describe("test_command detection", function()
   local root

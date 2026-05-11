@@ -1,4 +1,4 @@
-local InlineEdit = require("zeroxzero.inline_edit")
+local InlineEdit = require("zxz.edit.inline_edit")
 
 describe("inline_edit", function()
   local bufnr

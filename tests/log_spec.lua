@@ -11,17 +11,17 @@ describe("log", function()
     saved_state = vim.fn.stdpath("state")
     vim.env.XDG_STATE_HOME = tmp
     -- Reload the module so it re-resolves stdpath.
-    package.loaded["zeroxzero.log"] = nil
+    package.loaded["zxz.core.log"] = nil
   end)
 
   after_each(function()
     helpers.cleanup(tmp)
     vim.env.XDG_STATE_HOME = nil
-    package.loaded["zeroxzero.log"] = nil
+    package.loaded["zxz.core.log"] = nil
   end)
 
   it("appends timestamped lines at each level", function()
-    local log = require("zeroxzero.log")
+    local log = require("zxz.core.log")
     log.error("boom", { code = 7 })
     log.warn("careful")
     log.info("hi")

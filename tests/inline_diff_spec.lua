@@ -1,4 +1,4 @@
-local InlineDiff = require("zeroxzero.inline_diff")
+local InlineDiff = require("zxz.edit.inline_diff")
 
 local function fixture(diff)
   return InlineDiff.parse(diff)
