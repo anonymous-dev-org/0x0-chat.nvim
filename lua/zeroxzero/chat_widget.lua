@@ -334,6 +334,9 @@ function ChatWidget:open()
     api.nvim_win_set_width(self.transcript_win, width)
     vim.wo[self.transcript_win].wrap = true
     vim.wo[self.transcript_win].linebreak = true
+    vim.wo[self.transcript_win].number = false
+    vim.wo[self.transcript_win].relativenumber = false
+    vim.wo[self.transcript_win].signcolumn = "no"
     pcall(function()
       vim.wo[self.transcript_win].foldmethod = "expr"
       vim.wo[self.transcript_win].foldexpr = "v:lua.vim.treesitter.foldexpr()"
@@ -351,6 +354,9 @@ function ChatWidget:open()
     vim.wo[self.input_win].wrap = true
     vim.wo[self.input_win].linebreak = true
     vim.wo[self.input_win].winfixheight = true
+    vim.wo[self.input_win].number = false
+    vim.wo[self.input_win].relativenumber = false
+    vim.wo[self.input_win].signcolumn = "no"
   end
 
   if win_valid(self.input_win) then
