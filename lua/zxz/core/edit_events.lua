@@ -3,6 +3,11 @@ local M = {}
 local events_by_run = {}
 local sequence = 0
 
+local DEFAULT_LIMITS = {
+  max_content_bytes = 512 * 1024,
+  max_diff_bytes = 256 * 1024,
+}
+
 local function chomp(s)
   return (s or ""):gsub("[\r\n]+$", "")
 end
@@ -92,6 +97,34 @@ local function diff_stats(diff)
   return additions, deletions
 end
 
+local function line_count(content)
+  if not content or content == "" then
+    return 0
+  end
+  local _, count = content:gsub("\n", "\n")
+  if content:sub(-1) ~= "\n" then
+    count = count + 1
+  end
+  return count
+end
+
+local function contains_nul(content)
+  return type(content) == "string" and content:find("%z") ~= nil
+end
+
+local function guard_reason(before_content, after_content, limits)
+  limits = vim.tbl_extend("force", DEFAULT_LIMITS, limits or {})
+  if contains_nul(before_content) or contains_nul(after_content) then
+    return "binary"
+  end
+  local before_len = before_content and #before_content or 0
+  local after_len = after_content and #after_content or 0
+  if before_len > limits.max_content_bytes or after_len > limits.max_content_bytes then
+    return "content_too_large"
+  end
+  return nil
+end
+
 local function diff_hunks(event_id, diff)
   local hunks = {}
   for line in (diff or ""):gmatch("([^\n]*)\n?") do
@@ -151,12 +184,33 @@ function M.from_write(opts)
   end
   sequence = sequence + 1
   local event_id = ("%s:%s:%d:%d"):format(opts.run_id or "run", path, os.time(), sequence)
-  local diff = diff_text(path, before_content, after_content)
-  local additions, deletions = diff_stats(diff)
+  local limits = opts.limits or opts
+  local summary_reason = guard_reason(before_content, after_content, limits)
+  local diff = ""
+  local additions
+  local deletions
+  local stats_exact = true
+  if summary_reason then
+    additions = line_count(after_content)
+    deletions = line_count(before_content)
+    stats_exact = false
+  else
+    diff = diff_text(path, before_content, after_content)
+    if #diff > (limits.max_diff_bytes or DEFAULT_LIMITS.max_diff_bytes) then
+      summary_reason = "diff_too_large"
+      diff = ""
+      additions = line_count(after_content)
+      deletions = line_count(before_content)
+      stats_exact = false
+    else
+      additions, deletions = diff_stats(diff)
+    end
+  end
   local event = {
     id = event_id,
     run_id = opts.run_id,
     tool_call_id = opts.tool_call_id,
+    tool_call_id_source = opts.tool_call_id_source,
     path = path,
     before_sha = blob_sha(opts.root, before_content),
     after_sha = blob_sha(opts.root, after_content),
@@ -165,9 +219,12 @@ function M.from_write(opts)
     deletions = deletions,
     change_type = before_content == nil and "add" or "modify",
     status = "pending",
+    summary_only = summary_reason ~= nil,
+    summary_reason = summary_reason,
+    stats_exact = stats_exact,
     timestamp = os.time(),
   }
-  event.hunks = diff_hunks(event.id, diff)
+  event.hunks = summary_reason and {} or diff_hunks(event.id, diff)
   return event
 end
 
@@ -364,7 +421,24 @@ function M.annotate_chunks(chunks, source)
   return chunks
 end
 
-local function pending_event_hunks(event)
+local function pending_event_hunks(event, blocked_by_event_id)
+  if blocked_by_event_id then
+    return {
+      type = event.change_type or "modify",
+      hunks = {},
+      summary_only = true,
+      summary_reason = "resolve_earlier_event_first",
+      blocked_by_event_id = blocked_by_event_id,
+    }
+  end
+  if event.summary_only then
+    return {
+      type = event.change_type or "modify",
+      hunks = {},
+      summary_only = true,
+      summary_reason = event.summary_reason,
+    }
+  end
   local parsed = require("zxz.edit.inline_diff").parse(event.diff or "")
   local file = parsed[event.path]
   if not file or not file.hunks then
@@ -393,17 +467,73 @@ end
 ---@return table[]
 function M.pending_chunks(source)
   local chunks = {}
+  local first_pending_by_path = {}
   for _, event in ipairs(events_from_source(source)) do
     if (event.status or "pending") ~= "accepted" and (event.status or "pending") ~= "rejected" then
-      local parsed = pending_event_hunks(event)
+      local blocked_by_event_id = first_pending_by_path[event.path]
+      local parsed = pending_event_hunks(event, blocked_by_event_id)
       if parsed then
         chunks[#chunks + 1] = {
           path = event.path,
           lines = vim.split(event.diff or "", "\n", { plain = true }),
           parsed = parsed,
           edit_events = { event },
+          event_id = event.id,
+          blocked_by_event_id = blocked_by_event_id,
         }
       end
+      first_pending_by_path[event.path] = first_pending_by_path[event.path] or event.id
+    end
+  end
+  return chunks
+end
+
+local function hunk_count(chunk)
+  return chunk and chunk.parsed and chunk.parsed.hunks and #chunk.parsed.hunks or 0
+end
+
+local function file_level_fallback(chunk, reason, blocked_by_event_id)
+  local parsed = chunk.parsed or {}
+  return {
+    path = chunk.path,
+    lines = {},
+    parsed = {
+      type = parsed.type or "modify",
+      hunks = {},
+      summary_only = true,
+      summary_reason = reason,
+      blocked_by_event_id = blocked_by_event_id,
+    },
+    checkpoint_fallback = true,
+    blocked_by_event_id = blocked_by_event_id,
+  }
+end
+
+---@param source table|string|nil run table or run_id
+---@param fallback_chunks table[]|nil checkpoint/run diff chunks
+---@return table[]
+function M.review_chunks(source, fallback_chunks)
+  local chunks = M.pending_chunks(source)
+  if not fallback_chunks or #fallback_chunks == 0 then
+    return chunks
+  end
+  local by_path = {}
+  for _, chunk in ipairs(chunks) do
+    local bucket = by_path[chunk.path] or {
+      first_event_id = chunk.event_id,
+      hunk_count = 0,
+    }
+    bucket.first_event_id = bucket.first_event_id or chunk.event_id
+    bucket.hunk_count = bucket.hunk_count + hunk_count(chunk)
+    by_path[chunk.path] = bucket
+  end
+  for _, fallback in ipairs(fallback_chunks) do
+    local path = fallback.path
+    local bucket = path and by_path[path]
+    if not bucket then
+      chunks[#chunks + 1] = fallback
+    elseif hunk_count(fallback) > bucket.hunk_count then
+      chunks[#chunks + 1] = file_level_fallback(fallback, "resolve_event_hunks_first", bucket.first_event_id)
     end
   end
   return chunks
@@ -414,6 +544,9 @@ end
 function M.summary(event)
   local adds = tonumber(event and event.additions) or 0
   local dels = tonumber(event and event.deletions) or 0
+  if event and event.summary_only then
+    return ("edited `%s` (summary only: %s)"):format(event.path or "?", event.summary_reason or "guarded")
+  end
   return ("edited `%s` (+%d/-%d)"):format(event.path or "?", adds, dels)
 end
 

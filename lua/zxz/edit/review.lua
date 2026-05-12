@@ -94,11 +94,9 @@ local function build_checkpoint_state(checkpoint, chat)
   if diff_text == "" then
     return nil, "no changes since checkpoint"
   end
-  local files = EditEvents.pending_chunks(checkpoint.turn_id)
-  if #files == 0 then
-    files = file_chunks(diff_text)
-    EditEvents.annotate_chunks(files, checkpoint.turn_id)
-  end
+  local diff_files = file_chunks(diff_text)
+  EditEvents.annotate_chunks(diff_files, checkpoint.turn_id)
+  local files = EditEvents.review_chunks(checkpoint.turn_id, diff_files)
   return {
     kind = "checkpoint",
     checkpoint = checkpoint,
@@ -115,11 +113,9 @@ local function refresh_checkpoint_state(state)
     return
   end
   local diff_text = Checkpoint.diff_text(state.checkpoint, nil, 3)
-  state.files = EditEvents.pending_chunks(state.checkpoint.turn_id)
-  if #state.files == 0 then
-    state.files = file_chunks(diff_text)
-    EditEvents.annotate_chunks(state.files, state.checkpoint.turn_id)
-  end
+  local diff_files = file_chunks(diff_text)
+  EditEvents.annotate_chunks(diff_files, state.checkpoint.turn_id)
+  state.files = EditEvents.review_chunks(state.checkpoint.turn_id, diff_files)
   state.statuses = {}
 end
 
@@ -152,11 +148,9 @@ local function build_run_state(run, chat)
   if diff_text == "" then
     return nil, "run touched no files"
   end
-  local files = EditEvents.pending_chunks(run)
-  if #files == 0 then
-    files = file_chunks(diff_text)
-    EditEvents.annotate_chunks(files, run)
-  end
+  local diff_files = file_chunks(diff_text)
+  EditEvents.annotate_chunks(diff_files, run)
+  local files = EditEvents.review_chunks(run, diff_files)
   return {
     kind = "run",
     run = run,
@@ -174,6 +168,13 @@ local function file_label(state, file)
   local status = state.statuses[file.path]
   local prefix = status and ("[" .. status:sub(1, 1) .. "]") or "[ ]"
   local hunks = parsed.hunks and #parsed.hunks or 0
+  if parsed.summary_only then
+    local reason = (parsed.summary_reason or "summary_only"):gsub("_", " ")
+    if parsed.blocked_by_event_id then
+      reason = reason .. " · blocked"
+    end
+    return ("%s %s %s (file-level, %s)"):format(prefix, kind, file.path, reason)
+  end
   return ("%s %s %s (%d hunk%s)"):format(prefix, kind, file.path, hunks, hunks == 1 and "" or "s")
 end
 
@@ -181,6 +182,10 @@ local function file_header(file)
   local parsed = file.parsed or {}
   local kind = STATUS_LABEL[parsed.type or "modify"] or "M"
   local hunks = parsed.hunks and #parsed.hunks or 0
+  if parsed.summary_only then
+    local suffix = parsed.blocked_by_event_id and ", blocked" or ""
+    return ("%s %s (file-level%s)"):format(kind, file.path, suffix)
+  end
   return ("%s %s (%d hunk%s)"):format(kind, file.path, hunks, hunks == 1 and "" or "s")
 end
 
@@ -326,9 +331,30 @@ local function refresh_run_file(state, action, file)
   return restore_path_from(root, run.start_sha, file.path)
 end
 
+local function blocked_file_reason(file)
+  local parsed = file and file.parsed
+  if parsed and parsed.blocked_by_event_id then
+    return "resolve earlier event hunks in " .. file.path .. " first"
+  end
+  return nil
+end
+
+local function file_level_only_reason(file)
+  local parsed = file and file.parsed
+  if parsed and parsed.summary_only and not parsed.blocked_by_event_id then
+    return "file-level review item; use A/R for file actions"
+  end
+  return nil
+end
+
 local function accept_hunk(state, bufnr)
   local file, hunk = current_hunk(state)
   if not file or not hunk then
+    local reason = file_level_only_reason(current_file(state))
+    if reason then
+      vim.notify("0x0: " .. reason, vim.log.levels.INFO)
+      return true
+    end
     return false
   end
   if state.kind ~= "checkpoint" then
@@ -349,6 +375,11 @@ end
 local function reject_hunk(state, bufnr)
   local file, hunk = current_hunk(state)
   if not file or not hunk then
+    local reason = file_level_only_reason(current_file(state))
+    if reason then
+      vim.notify("0x0: " .. reason, vim.log.levels.INFO)
+      return true
+    end
     return false
   end
   if state.kind ~= "checkpoint" then
@@ -371,6 +402,11 @@ accept_file = function(state, bufnr)
   local file = current_file(state)
   if not file then
     return false
+  end
+  local blocked = blocked_file_reason(file)
+  if blocked then
+    vim.notify("0x0: accept blocked: " .. blocked, vim.log.levels.WARN)
+    return true
   end
   if state.kind == "checkpoint" then
     local ok, err = Ledger.accept_file(state.checkpoint, file.path)
@@ -403,6 +439,11 @@ reject_file = function(state, bufnr)
   local file = current_file(state)
   if not file then
     return false
+  end
+  local blocked = blocked_file_reason(file)
+  if blocked then
+    vim.notify("0x0: reject blocked: " .. blocked, vim.log.levels.WARN)
+    return true
   end
   if state.kind == "checkpoint" then
     local ok, err = Ledger.reject_file(state.checkpoint, file.path)

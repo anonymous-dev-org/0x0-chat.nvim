@@ -128,6 +128,10 @@ M.defaults = {
     streaming_refresh = true,
     streaming_refresh_delay_ms = 40,
   },
+  edit_events = {
+    max_content_bytes = 512 * 1024,
+    max_diff_bytes = 256 * 1024,
+  },
   detached_runs_max = 4,
   test_command = nil, -- auto-detected per project; override per-setup if needed
   test_command_timeout_ms = 5000, -- @test-output kill-on-timeout (T2.1, T2.7)

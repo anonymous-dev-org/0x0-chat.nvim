@@ -125,6 +125,71 @@ local function auto_permission(_run, request, respond)
   respond(pick or "")
 end
 
+local TERMINAL_TOOL_STATUS = {
+  cancelled = true,
+  completed = true,
+  failed = true,
+}
+
+local function active_tool_is_attachable(run_record, tool_call_id)
+  if not run_record or not tool_call_id then
+    return false
+  end
+  for _, tool in ipairs(run_record.tool_calls or {}) do
+    if tool.tool_call_id == tool_call_id then
+      return not TERMINAL_TOOL_STATUS[tool.status]
+    end
+  end
+  return false
+end
+
+local function resolve_tool_call_id(params, active_tool_call_id, run_record)
+  local explicit = params.toolCallId or params.tool_call_id
+  if explicit and explicit ~= "" then
+    return explicit, "explicit"
+  end
+  if active_tool_is_attachable(run_record, active_tool_call_id) then
+    return active_tool_call_id, "active"
+  end
+  return nil, "unattributed"
+end
+
+local function record_write_event(
+  run,
+  params,
+  abs,
+  before_content,
+  after_content,
+  tool_call_id,
+  tool_call_id_source,
+  run_record
+)
+  vim.schedule(function()
+    local ok, event = pcall(EditEvents.from_write, {
+      root = run.repo_root,
+      path = params.path,
+      abs_path = abs,
+      run_id = run_record and run_record.run_id,
+      tool_call_id = tool_call_id,
+      tool_call_id_source = tool_call_id_source,
+      before_content = before_content,
+      after_content = after_content,
+      limits = config.current.edit_events or {},
+    })
+    if not ok then
+      require("zxz.core.log").warn("run_registry: edit-event recording failed: " .. tostring(event))
+      return
+    end
+    if not event or not run_record then
+      return
+    end
+    EditEvents.append_to_run(run_record, event)
+    EditEvents.record(event)
+    pcall(require("zxz.core.runs_store").save, run_record)
+    run.history:append_tool_edit_event(tool_call_id, event)
+  end)
+end
+
 ---@param run zxz.DetachedRun
 ---@param params table
 ---@param respond fun(content: string|nil, err: table|nil)
@@ -176,21 +241,11 @@ local function fs_write(run, params, respond)
     respond({ code = -32000, message = err or "write rejected" })
     return
   end
-  local tool_call_id = params.toolCallId or params.tool_call_id or run.active_tool_call_id
-  local event = EditEvents.from_write({
-    root = run.repo_root,
-    path = params.path,
-    abs_path = abs,
-    run_id = run.current_run and run.current_run.run_id,
-    tool_call_id = tool_call_id,
-    before_content = before_content,
-    after_content = params.content or "",
-  })
-  if event then
-    run:_run_record_edit_event(event)
-    run.history:append_tool_edit_event(tool_call_id, event)
-  end
+  local after_content = params.content or ""
+  local run_record = run.current_run
+  local tool_call_id, tool_call_id_source = resolve_tool_call_id(params, run.active_tool_call_id, run_record)
   respond(nil)
+  record_write_event(run, params, abs, before_content, after_content, tool_call_id, tool_call_id_source, run_record)
 end
 
 ---@param opts { prompt: string, provider?: string, model?: string, mode?: string, cwd?: string, on_complete?: fun(run_id: string, status: string, files: string[]) }

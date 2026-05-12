@@ -8,6 +8,78 @@ local InlineDiff = require("zxz.edit.inline_diff")
 
 local M = {}
 
+local TERMINAL_TOOL_STATUS = {
+  cancelled = true,
+  completed = true,
+  failed = true,
+}
+
+local function active_tool_is_attachable(run, tool_call_id)
+  if not run or not tool_call_id then
+    return false
+  end
+  for _, tool in ipairs(run.tool_calls or {}) do
+    if tool.tool_call_id == tool_call_id then
+      return not TERMINAL_TOOL_STATUS[tool.status]
+    end
+  end
+  return false
+end
+
+local function resolve_tool_call_id(params, active_tool_call_id, run)
+  local explicit = params.toolCallId or params.tool_call_id
+  if explicit and explicit ~= "" then
+    return explicit, "explicit"
+  end
+  if active_tool_is_attachable(run, active_tool_call_id) then
+    return active_tool_call_id, "active"
+  end
+  return nil, "unattributed"
+end
+
+local function record_write_event(
+  chat,
+  params,
+  abs,
+  before_content,
+  after_content,
+  tool_call_id,
+  tool_call_id_source,
+  run
+)
+  vim.schedule(function()
+    local ok, event = pcall(EditEvents.from_write, {
+      root = chat.repo_root,
+      path = params.path,
+      abs_path = abs,
+      run_id = run and run.run_id,
+      tool_call_id = tool_call_id,
+      tool_call_id_source = tool_call_id_source,
+      before_content = before_content,
+      after_content = after_content,
+      limits = config.current.edit_events or {},
+    })
+    if not ok then
+      require("zxz.core.log").warn("fs_bridge: edit-event recording failed: " .. tostring(event))
+      return
+    end
+    if not event then
+      return
+    end
+    if run then
+      EditEvents.append_to_run(run, event)
+      EditEvents.record(event)
+      pcall(require("zxz.core.runs_store").save, run)
+    end
+    if tool_call_id and chat.history:append_tool_edit_event(tool_call_id, event) then
+      chat:_render()
+    else
+      chat.history:add_activity(EditEvents.summary(event), "completed")
+      chat:_render()
+    end
+  end)
+end
+
 ---Standalone resolver: ACP-supplied path → absolute path. Relative paths
 ---are joined onto repo_root so we never read/write outside the project.
 ---Exposed for reuse by run_registry's detached fs handlers (T1.11).
@@ -81,25 +153,10 @@ function M:_handle_fs_write(params, respond)
       respond({ code = -32000, message = werr or "write rejected" })
       return
     end
-    local tool_call_id = params.toolCallId or params.tool_call_id or self.active_tool_call_id
-    local event = EditEvents.from_write({
-      root = self.repo_root,
-      path = params.path,
-      abs_path = abs,
-      run_id = self.current_run and self.current_run.run_id,
-      tool_call_id = tool_call_id,
-      before_content = before_content,
-      after_content = params.content or "",
-    })
-    if event then
-      self:_run_record_edit_event(event)
-      if tool_call_id and self.history:append_tool_edit_event(tool_call_id, event) then
-        self:_render()
-      else
-        self.history:add_activity(EditEvents.summary(event), "completed")
-        self:_render()
-      end
-    end
+    local after_content = params.content or ""
+    local run = self.current_run
+    local tool_call_id, tool_call_id_source = resolve_tool_call_id(params, self.active_tool_call_id, run)
+    respond(nil)
     if self.repo_root and Checkpoint.is_ignored(self.repo_root, abs) then
       local rel = vim.fn.fnamemodify(abs, ":~:.")
       self.history:add({
@@ -113,7 +170,7 @@ function M:_handle_fs_write(params, respond)
     if self.checkpoint and inline_cfg.streaming_refresh ~= false then
       InlineDiff.refresh_path_streaming(self.checkpoint, abs, inline_cfg.streaming_refresh_delay_ms)
     end
-    respond(nil)
+    record_write_event(self, params, abs, before_content, after_content, tool_call_id, tool_call_id_source, run)
   end)
 end
 

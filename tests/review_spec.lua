@@ -168,4 +168,102 @@ describe("zxz review buffer", function()
     assert.is_truthy(vim.tbl_contains(lines, "No unresolved changes."))
     assert.are.equal("accepted", event.hunks[1].status)
   end)
+
+  it("renders non-event checkpoint files alongside pending event hunks", function()
+    root = vim.loop.fs_realpath(helpers.make_repo({ ["a.txt"] = "old\n", ["b.txt"] = "before\n" }))
+    local Checkpoint = require("zxz.core.checkpoint")
+    local EditEvents = require("zxz.core.edit_events")
+    local cp = assert(Checkpoint.snapshot(root))
+    local event = assert(EditEvents.from_write({
+      root = root,
+      path = "a.txt",
+      abs_path = root .. "/a.txt",
+      run_id = cp.turn_id,
+      tool_call_id = "tool-review-mixed",
+      before_content = "old\n",
+      after_content = "new\n",
+    }))
+    EditEvents.record(event)
+    helpers.write_file(root .. "/a.txt", "new\n")
+    helpers.write_file(root .. "/b.txt", "after\n")
+
+    require("zxz.edit.review").open_checkpoint(cp, { chat = {} })
+
+    local lines = vim.api.nvim_buf_get_lines(0, 0, -1, false)
+    assert.is_truthy(vim.tbl_contains(lines, "[ ] hunk 1/1 @@ -1 +1 @@ · tool-review-mixed"))
+    assert.is_truthy(vim.tbl_contains(lines, "M b.txt (1 hunk)"))
+  end)
+
+  it("blocks later same-file events until earlier event hunks are resolved", function()
+    root = vim.loop.fs_realpath(helpers.make_repo({ ["a.txt"] = "old\n" }))
+    local Checkpoint = require("zxz.core.checkpoint")
+    local EditEvents = require("zxz.core.edit_events")
+    local cp = assert(Checkpoint.snapshot(root))
+    local first = assert(EditEvents.from_write({
+      root = root,
+      path = "a.txt",
+      abs_path = root .. "/a.txt",
+      run_id = cp.turn_id,
+      tool_call_id = "tool-first",
+      before_content = "old\n",
+      after_content = "new\n",
+    }))
+    local second = assert(EditEvents.from_write({
+      root = root,
+      path = "a.txt",
+      abs_path = root .. "/a.txt",
+      run_id = cp.turn_id,
+      tool_call_id = "tool-second",
+      before_content = "new\n",
+      after_content = "newer\n",
+    }))
+    EditEvents.record(first)
+    EditEvents.record(second)
+    helpers.write_file(root .. "/a.txt", "newer\n")
+
+    require("zxz.edit.review").open_checkpoint(cp, { chat = {} })
+
+    local lines = vim.api.nvim_buf_get_lines(0, 0, -1, false)
+    assert.is_truthy(vim.tbl_contains(lines, "[ ] hunk 1/1 @@ -1 +1 @@ · tool-first"))
+    assert.is_truthy(vim.tbl_contains(lines, "M a.txt (file-level, blocked)"))
+    assert.is_truthy(vim.tbl_contains(lines, "[ ] M a.txt (file-level, resolve earlier event first · blocked)"))
+
+    cursor_to_line("resolve earlier event first")
+    assert.is_true(require("zxz.edit.verbs").accept_file())
+    assert.are.equal("pending", second.status)
+  end)
+
+  it("renders guarded summary events as file-level only review items", function()
+    root = vim.loop.fs_realpath(helpers.make_repo({ ["large.txt"] = "old\n" }))
+    local Checkpoint = require("zxz.core.checkpoint")
+    local EditEvents = require("zxz.core.edit_events")
+    local cp = assert(Checkpoint.snapshot(root))
+    local event = assert(EditEvents.from_write({
+      root = root,
+      path = "large.txt",
+      abs_path = root .. "/large.txt",
+      run_id = cp.turn_id,
+      tool_call_id = "tool-summary",
+      before_content = "old\n",
+      after_content = "new\n",
+      limits = {
+        max_content_bytes = 3,
+        max_diff_bytes = 1024,
+      },
+    }))
+    EditEvents.record(event)
+    helpers.write_file(root .. "/large.txt", "new\n")
+
+    require("zxz.edit.review").open_checkpoint(cp, { chat = {} })
+
+    local lines = vim.api.nvim_buf_get_lines(0, 0, -1, false)
+    assert.is_truthy(vim.tbl_contains(lines, "M large.txt (file-level)"))
+    assert.is_truthy(vim.tbl_contains(lines, "[ ] M large.txt (file-level, content too large)"))
+
+    cursor_to_line("content too large")
+    assert.is_true(require("zxz.edit.verbs").accept_current())
+    assert.are.equal("pending", event.status)
+    assert.is_true(require("zxz.edit.verbs").accept_file())
+    assert.are.equal("accepted", event.status)
+  end)
 end)
