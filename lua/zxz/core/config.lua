@@ -131,6 +131,8 @@ M.defaults = {
   edit_events = {
     max_content_bytes = 512 * 1024,
     max_diff_bytes = 256 * 1024,
+    max_retained_runs = 64,
+    max_age_seconds = 24 * 60 * 60,
   },
   detached_runs_max = 4,
   test_command = nil, -- auto-detected per project; override per-setup if needed
@@ -151,7 +153,14 @@ M.defaults = {
       dismiss = "<C-]>",
     },
     filetypes = {
-      exclude = { "TelescopePrompt", "NvimTree", "help", "qf", "alpha", "dashboard" },
+      exclude = {
+        "TelescopePrompt",
+        "NvimTree",
+        "help",
+        "qf",
+        "alpha",
+        "dashboard",
+      },
     },
     cache = {
       enabled = true,

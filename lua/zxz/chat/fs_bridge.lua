@@ -5,36 +5,47 @@ local Checkpoint = require("zxz.core.checkpoint")
 local config = require("zxz.core.config")
 local EditEvents = require("zxz.core.edit_events")
 local InlineDiff = require("zxz.edit.inline_diff")
+local ToolAttribution = require("zxz.core.tool_attribution")
 
 local M = {}
 
-local TERMINAL_TOOL_STATUS = {
-  cancelled = true,
-  completed = true,
-  failed = true,
-}
-
-local function active_tool_is_attachable(run, tool_call_id)
-  if not run or not tool_call_id then
-    return false
-  end
-  for _, tool in ipairs(run.tool_calls or {}) do
-    if tool.tool_call_id == tool_call_id then
-      return not TERMINAL_TOOL_STATUS[tool.status]
+local function normalize_path(path)
+  local absolute = path:sub(1, 1) == "/"
+  local parts = {}
+  for part in path:gmatch("[^/]+") do
+    if part == ".." then
+      if #parts == 0 then
+        return nil
+      end
+      parts[#parts] = nil
+    elseif part ~= "." and part ~= "" then
+      parts[#parts + 1] = part
     end
   end
-  return false
+  return (absolute and "/" or "") .. table.concat(parts, "/")
 end
 
-local function resolve_tool_call_id(params, active_tool_call_id, run)
-  local explicit = params.toolCallId or params.tool_call_id
-  if explicit and explicit ~= "" then
-    return explicit, "explicit"
+local function record_dropped_event(chat, run, params, abs, err)
+  local path = params.path or abs
+  local diagnostic = EditEvents.record_diagnostic(run, {
+    path = path,
+    reason = "edit_event_record_failed",
+    message = tostring(err),
+    source = "fs_bridge",
+  })
+  if run and diagnostic then
+    pcall(require("zxz.core.runs_store").save, run)
   end
-  if active_tool_is_attachable(run, active_tool_call_id) then
-    return active_tool_call_id, "active"
+  require("zxz.core.log").warn("fs_bridge: edit-event recording failed: " .. tostring(err))
+  if chat.history then
+    chat.history:add_activity(
+      ("edit tracking failed for `%s` — review may fall back to checkpoint diff"):format(path or "?"),
+      "failed"
+    )
   end
-  return nil, "unattributed"
+  if chat._render then
+    chat:_render()
+  end
 end
 
 local function record_write_event(
@@ -48,34 +59,35 @@ local function record_write_event(
   run
 )
   vim.schedule(function()
-    local ok, event = pcall(EditEvents.from_write, {
-      root = chat.repo_root,
-      path = params.path,
-      abs_path = abs,
-      run_id = run and run.run_id,
-      tool_call_id = tool_call_id,
-      tool_call_id_source = tool_call_id_source,
-      before_content = before_content,
-      after_content = after_content,
-      limits = config.current.edit_events or {},
-    })
+    local ok, err = pcall(function()
+      local event = EditEvents.from_write({
+        root = chat.repo_root,
+        path = params.path,
+        abs_path = abs,
+        run_id = run and run.run_id,
+        tool_call_id = tool_call_id,
+        tool_call_id_source = tool_call_id_source,
+        before_content = before_content,
+        after_content = after_content,
+        limits = config.current.edit_events or {},
+      })
+      if not event then
+        return
+      end
+      if run then
+        EditEvents.append_to_run(run, event)
+        EditEvents.record(event)
+        pcall(require("zxz.core.runs_store").save, run)
+      end
+      if tool_call_id and chat.history:append_tool_edit_event(tool_call_id, event) then
+        chat:_render()
+      else
+        chat.history:add_activity(EditEvents.summary(event), "completed")
+        chat:_render()
+      end
+    end)
     if not ok then
-      require("zxz.core.log").warn("fs_bridge: edit-event recording failed: " .. tostring(event))
-      return
-    end
-    if not event then
-      return
-    end
-    if run then
-      EditEvents.append_to_run(run, event)
-      EditEvents.record(event)
-      pcall(require("zxz.core.runs_store").save, run)
-    end
-    if tool_call_id and chat.history:append_tool_edit_event(tool_call_id, event) then
-      chat:_render()
-    else
-      chat.history:add_activity(EditEvents.summary(event), "completed")
-      chat:_render()
+      record_dropped_event(chat, run, params, abs, err)
     end
   end)
 end
@@ -90,11 +102,21 @@ function M.resolve_path(repo_root, path)
   if type(path) ~= "string" or path == "" then
     return nil
   end
-  if path:sub(1, 1) == "/" then
-    return path
+  if not repo_root or repo_root == "" then
+    return nil
   end
-  if repo_root and repo_root ~= "" then
-    return repo_root .. "/" .. path
+  local root = vim.fn.fnamemodify(repo_root, ":p")
+  root = root:gsub("/+$", "")
+  if root == "" then
+    return nil
+  end
+  local abs = path:sub(1, 1) == "/" and path or (root .. "/" .. path)
+  abs = normalize_path(vim.fn.fnamemodify(abs, ":p"):gsub("/+$", ""))
+  if not abs then
+    return nil
+  end
+  if abs == root or abs:sub(1, #root + 1) == root .. "/" then
+    return abs
   end
   return nil
 end
@@ -155,7 +177,7 @@ function M:_handle_fs_write(params, respond)
     end
     local after_content = params.content or ""
     local run = self.current_run
-    local tool_call_id, tool_call_id_source = resolve_tool_call_id(params, self.active_tool_call_id, run)
+    local tool_call_id, tool_call_id_source = ToolAttribution.resolve(params, self.active_tool_call_id, run)
     respond(nil)
     if self.repo_root and Checkpoint.is_ignored(self.repo_root, abs) then
       local rel = vim.fn.fnamemodify(abs, ":~:.")

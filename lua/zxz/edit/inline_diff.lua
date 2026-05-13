@@ -321,14 +321,23 @@ local function restore_window_views(views, bufnr)
   end
 end
 
+local function refresh_review(checkpoint)
+  local ok, review = pcall(require, "zxz.edit.review")
+  if ok and review and review.refresh_checkpoint then
+    pcall(review.refresh_checkpoint, checkpoint)
+  end
+end
+
 ---Reload the buffer from disk if unmodified, then re-place the overlay using
 ---the given checkpoint.
 ---@param checkpoint table
 ---@param abs_path string
-function M.refresh_path(checkpoint, abs_path)
+---@param opts? { refresh_review?: boolean }
+function M.refresh_path(checkpoint, abs_path, opts)
   if not checkpoint or not abs_path then
     return
   end
+  opts = opts or {}
   local bufnr = vim.fn.bufnr(abs_path)
   if bufnr == -1 or not api.nvim_buf_is_valid(bufnr) then
     return
@@ -350,6 +359,9 @@ function M.refresh_path(checkpoint, abs_path)
   end
   M.attach(bufnr, file, checkpoint)
   restore_window_views(views, bufnr)
+  if opts.refresh_review ~= false then
+    refresh_review(checkpoint)
+  end
 end
 
 ---Debounced refresh used by host-mediated file writes while the agent is still
@@ -405,6 +417,7 @@ function M.refresh_all(checkpoint)
       M.attach(bufnr, file, checkpoint)
     end
   end
+  refresh_review(checkpoint)
 end
 
 ---Detach every overlay (called when the checkpoint is cleared).

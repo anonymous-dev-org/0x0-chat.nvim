@@ -32,7 +32,10 @@ function M:_ensure_checkpoint(on_ready)
     self.reconcile:set_checkpoint(cp)
     self.reconcile:set_mode(config.current.reconcile or "strict")
   else
-    self.reconcile = Reconcile.new({ checkpoint = cp, mode = config.current.reconcile or "strict" })
+    self.reconcile = Reconcile.new({
+      checkpoint = cp,
+      mode = config.current.reconcile or "strict",
+    })
   end
   InlineDiff.set_active(cp)
   on_ready(cp, nil)
@@ -385,6 +388,7 @@ function M:_reset_session()
   self.response_started = false
   self.cancel_requested = false
   self.queued_prompts = {}
+  self.pending_trim = {}
   if self.permission_queue then
     for _, entry in ipairs(self.permission_queue) do
       pcall(entry.respond, "reject_once")

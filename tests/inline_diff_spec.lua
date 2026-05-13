@@ -211,7 +211,12 @@ describe("inline_diff accept/reject", function()
       path = "x",
       type = "modify",
       hunks = {
-        { new_start = 2, new_count = 1, old_lines = { "old" }, new_lines = { "new" } },
+        {
+          new_start = 2,
+          new_count = 1,
+          old_lines = { "old" },
+          new_lines = { "new" },
+        },
       },
     })
     vim.api.nvim_win_set_cursor(0, { 2, 0 })
@@ -227,7 +232,12 @@ describe("inline_diff accept/reject", function()
       type = "modify",
       abspath = "/tmp/zz_inline_reject_test",
       hunks = {
-        { new_start = 2, new_count = 1, old_lines = { "old" }, new_lines = { "new" } },
+        {
+          new_start = 2,
+          new_count = 1,
+          old_lines = { "old" },
+          new_lines = { "new" },
+        },
       },
     })
     vim.api.nvim_win_set_cursor(0, { 2, 0 })

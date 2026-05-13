@@ -9,6 +9,72 @@ local util = require("zxz.chat.util")
 
 local M = {}
 
+---Shared context-record + summary computation. Used by submit,
+---headless submit, and queue edits so the persisted shape stays
+---consistent.
+---@param prompt string
+---@param cwd? string
+---@return table[] records, string[] summary
+local function context_for_prompt(prompt, cwd)
+  local records = ReferenceMentions.records(prompt, cwd)
+  return records, ReferenceMentions.summary_from_records(records)
+end
+
+local function filter_trim_map(trim, records)
+  local allowed = {}
+  for _, record in ipairs(records or {}) do
+    if record.raw then
+      allowed[record.raw] = true
+    end
+  end
+  local out = {}
+  for raw, v in pairs(trim or {}) do
+    if v and allowed[raw] then
+      out[raw] = true
+    end
+  end
+  return out
+end
+
+local function apply_context_trim(records, trim)
+  local provider_records = {}
+  local trimmed_any = false
+  trim = trim or {}
+  for _, record in ipairs(records or {}) do
+    record.trimmed = nil
+    if record.raw and trim[record.raw] then
+      record.trimmed = true
+      trimmed_any = true
+    else
+      provider_records[#provider_records + 1] = record
+    end
+  end
+  return provider_records, trimmed_any
+end
+
+---Method form so any chat-mixin module can recompute context records and
+---the compact summary the same way submit/headless do.
+---@param prompt string
+---@param cwd? string
+---@return table[] records, string[] summary
+function M:_context_for_prompt(prompt, cwd)
+  return context_for_prompt(prompt, cwd)
+end
+
+---@param trim? table<string, boolean>
+---@param records? table[]
+---@return table<string, boolean>
+function M:_filter_context_trim(trim, records)
+  return filter_trim_map(trim, records)
+end
+
+---@param records table[]
+---@param trim? table<string, boolean>
+---@return table[] provider_records, boolean trimmed_any
+function M:_apply_context_trim(records, trim)
+  return apply_context_trim(records, trim)
+end
+
 function M:_handle_update(update)
   local kind = update.sessionUpdate
   if kind == "agent_message_chunk" or kind == "agent_thought_chunk" then
@@ -126,18 +192,32 @@ function M:submit()
     return
   end
   self.widget:push_history(prompt)
-  local context_summary = ReferenceMentions.summary(prompt, self:_session_cwd())
+  local context_records, context_summary = context_for_prompt(prompt, self:_session_cwd())
+  local trim = filter_trim_map(self.pending_trim, context_records)
+  local queue_records = vim.deepcopy(context_records)
+  apply_context_trim(queue_records, trim)
   if self.in_flight then
-    local id = self.history:add_user(prompt, "queued", context_summary)
-    table.insert(self.queued_prompts, { id = id, text = prompt })
+    local id = self.history:add_user(prompt, "queued", context_summary, queue_records)
+    table.insert(self.queued_prompts, {
+      id = id,
+      text = prompt,
+      trim = trim,
+      context_records = queue_records,
+      context_summary = context_summary,
+    })
+    self.pending_trim = {}
     self.widget:clear_input()
     self:_set_turn_activity(self.widget.activity_state or "waiting", self.widget.activity_label or "Working")
     self.widget:render()
     return
   end
-  local id = self.history:add_user(prompt, "active", context_summary)
+  local id = self.history:add_user(prompt, "active", context_summary, queue_records)
+  self.pending_trim = {}
   self:_maybe_generate_title(prompt)
-  self:_submit_prompt(prompt, id)
+  self:_submit_prompt(prompt, id, nil, {
+    context_records = queue_records,
+    trim = trim,
+  })
 end
 
 ---@param prompt string
@@ -163,7 +243,9 @@ end
 ---@param prompt string
 ---@param user_id string
 ---@param retried_session? boolean
-function M:_submit_prompt(prompt, user_id, retried_session)
+---@param opts? { context_records?: table[], trim?: table<string, boolean> }
+function M:_submit_prompt(prompt, user_id, retried_session, opts)
+  opts = opts or {}
   self.in_flight = true
   self.response_started = false
   self.cancel_requested = false
@@ -190,7 +272,14 @@ function M:_submit_prompt(prompt, user_id, retried_session)
       self:_start_run(prompt)
     end
     self:_set_turn_activity("waiting", "Working")
-    local prompt_blocks = ReferenceMentions.to_prompt_blocks(prompt, self:_session_cwd())
+    local cwd = self:_session_cwd()
+    local records = opts.context_records or context_for_prompt(prompt, cwd)
+    local trim = filter_trim_map(opts.trim, records)
+    local provider_records, trimmed_any = apply_context_trim(records, trim)
+    if trimmed_any or opts.context_records then
+      self.history:set_user_context(user_id, ReferenceMentions.summary_from_records(records), records)
+    end
+    local prompt_blocks = ReferenceMentions.to_prompt_blocks_from_records(prompt, provider_records, cwd)
     do
       local prelude_text = require("zxz.context.auto_prelude").build(config.current.auto_prelude, self:_session_cwd())
       if prelude_text then
@@ -216,7 +305,10 @@ function M:_submit_prompt(prompt, user_id, retried_session)
           self.session_id = nil
           self:_set_turn_activity("waiting", "Restarting session")
           self.widget:render()
-          self:_submit_prompt(prompt, user_id, true)
+          self:_submit_prompt(prompt, user_id, true, {
+            context_records = records,
+            trim = trim,
+          })
           return
         end
         if err and not (was_cancelled and util.is_transport_disconnected(err)) then
@@ -255,7 +347,10 @@ end
 function M:_notify_or_continue()
   local next_prompt = table.remove(self.queued_prompts, 1)
   if next_prompt then
-    self:_submit_prompt(next_prompt.text, next_prompt.id)
+    self:_submit_prompt(next_prompt.text, next_prompt.id, nil, {
+      context_records = next_prompt.context_records,
+      trim = next_prompt.trim,
+    })
     return
   end
   util.notify_user("ZxzChatTurnEnd")
@@ -294,15 +389,29 @@ function M:submit_prompt(prompt, opts)
   if opts.headless then
     self.headless = true
   end
-  local context_summary = ReferenceMentions.summary(prompt, self:_session_cwd())
+  local context_records, context_summary = context_for_prompt(prompt, self:_session_cwd())
+  local trim = filter_trim_map(self.pending_trim, context_records)
+  local queue_records = vim.deepcopy(context_records)
+  apply_context_trim(queue_records, trim)
   if self.in_flight then
-    local id = self.history:add_user(prompt, "queued", context_summary)
-    table.insert(self.queued_prompts, { id = id, text = prompt })
+    local id = self.history:add_user(prompt, "queued", context_summary, queue_records)
+    table.insert(self.queued_prompts, {
+      id = id,
+      text = prompt,
+      trim = trim,
+      context_records = queue_records,
+      context_summary = context_summary,
+    })
+    self.pending_trim = {}
     return
   end
-  local id = self.history:add_user(prompt, "active", context_summary)
+  local id = self.history:add_user(prompt, "active", context_summary, queue_records)
+  self.pending_trim = {}
   self:_maybe_generate_title(prompt)
-  self:_submit_prompt(prompt, id)
+  self:_submit_prompt(prompt, id, nil, {
+    context_records = queue_records,
+    trim = trim,
+  })
 end
 
 function M:cancel()

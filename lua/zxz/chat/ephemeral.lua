@@ -111,7 +111,10 @@ function M:run_inline_ask(opts)
           respond(content, nil)
         end,
         on_fs_write_text_file = function(_, respond)
-          respond({ code = -32000, message = "read-only inline ask: writes not allowed" })
+          respond({
+            code = -32000,
+            message = "read-only inline ask: writes not allowed",
+          })
         end,
       })
 

@@ -9,6 +9,9 @@ local function format_item(item)
   if #text > 80 then
     text = text:sub(1, 77) .. "..."
   end
+  if (item.trimmed or 0) > 0 then
+    text = text .. ("  (%d trimmed)"):format(item.trimmed)
+  end
   return ("%d. %s"):format(item.index, text)
 end
 
@@ -49,6 +52,15 @@ function M.actions(index)
             vim.notify("0x0: " .. (err or "queue update failed"), vim.log.levels.ERROR)
           end
         end)
+      end,
+    },
+    {
+      label = "Trim queued context",
+      run = function()
+        local ok, err = chat().trim_open(index)
+        if not ok then
+          vim.notify("0x0: " .. (err or "context trim failed"), vim.log.levels.ERROR)
+        end
       end,
     },
     {

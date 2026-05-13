@@ -47,6 +47,15 @@ local LANGUAGE_SCOPE_NODES = {
   },
 }
 
+local function hunk_side_label(label, start_line, count)
+  start_line = tonumber(start_line) or 0
+  count = tonumber(count) or 0
+  if count == 0 then
+    return ("%s insertion point: %d"):format(label, start_line)
+  end
+  return ("%s lines: %d-%d"):format(label, start_line, start_line + count - 1)
+end
+
 ---@param node TSNode
 ---@param wanted string[]
 ---@return TSNode|nil, string|nil
@@ -168,8 +177,26 @@ function M._build_prompt(scope, instruction)
     "```" .. fence,
   }
   vim.list_extend(body, scope.lines)
+  body[#body + 1] = "```"
+  if scope.hunk_context then
+    local hunk = scope.hunk_context
+    vim.list_extend(body, {
+      "",
+      "Related diff hunk:",
+      "```diff",
+    })
+    vim.list_extend(body, hunk.diff_lines or {})
+    vim.list_extend(body, {
+      "```",
+      "",
+      hunk_side_label("Old-side", hunk.old_start, hunk.old_count),
+      hunk_side_label("New-side", hunk.new_start, hunk.new_count),
+    })
+    if (tonumber(hunk.new_count) or 0) == 0 then
+      body[#body + 1] = "This is a deleted-only hunk; use the old-side diff as the target context."
+    end
+  end
   vim.list_extend(body, {
-    "```",
     "",
     "Constraints:",
     "- Edit ONLY the region above unless the instruction explicitly says to expand scope. Other files are off-limits.",
@@ -230,12 +257,13 @@ function M._open_instruction_input(prefill, on_done)
   end, { buffer = buf, silent = true, desc = "0x0 inline edit: cancel" })
 end
 
----@param opts { range?: { start_line: integer, end_line: integer }, instruction?: string, bufnr?: integer }
+---@param opts { range?: { start_line: integer, end_line: integer }, instruction?: string, bufnr?: integer, hunk_context?: table }
 function M.start(opts)
   opts = opts or {}
   local bufnr = opts.bufnr or vim.api.nvim_get_current_buf()
   local mode = opts.range and "v" or "n"
   local scope = M._resolve_scope(bufnr, mode, opts.range)
+  scope.hunk_context = opts.hunk_context
 
   local function dispatch(instruction)
     if not instruction or instruction == "" then

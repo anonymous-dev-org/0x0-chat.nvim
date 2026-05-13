@@ -207,7 +207,14 @@ function M.parse(input, cwd)
         local key = "diff\0" .. value
         if not seen[key] then
           seen[key] = true
-          table.insert(mentions, attach_range({ raw = "@" .. token, type = "branch_diff", base = value }))
+          table.insert(
+            mentions,
+            attach_range({
+              raw = "@" .. token,
+              type = "branch_diff",
+              base = value,
+            })
+          )
         end
         goto continue
       end
@@ -301,6 +308,36 @@ function M.parse(input, cwd)
   return mentions
 end
 
+local function raw_mention_tokens(input)
+  local tokens = {}
+  local seen = {}
+  local pos = 1
+  while pos <= #(input or "") do
+    local s, e, token = input:find("@([^%s`]+)", pos)
+    if not s then
+      break
+    end
+    pos = e + 1
+    local prev = s > 1 and input:sub(s - 1, s - 1) or nil
+    if is_mention_boundary(prev) then
+      token = trim_trailing_punctuation(token)
+      if token ~= "" then
+        local raw = "@" .. token
+        if not seen[raw] then
+          seen[raw] = true
+          tokens[#tokens + 1] = {
+            raw = raw,
+            token = token,
+            start_byte = s - 1,
+            end_byte = s + #token,
+          }
+        end
+      end
+    end
+  end
+  return tokens
+end
+
 local function summary_label(mention)
   if mention.type == "file" then
     return mention.raw or ("@" .. mention.path)
@@ -322,19 +359,111 @@ local function summary_label(mention)
   return mention.raw or ("@" .. tostring(mention.type))
 end
 
+local function record_source(mention)
+  if mention.type == "file" or mention.type == "range" then
+    return mention.path or mention.absolute_path
+  elseif mention.type == "diagnostics" then
+    return mention.severity_label or "all"
+  elseif mention.type == "lsp" then
+    return mention.lsp_kind
+  elseif mention.type == "branch_diff" then
+    return mention.base
+  elseif mention.type == "fetch" then
+    return mention.url
+  elseif mention.type == "rule" then
+    return mention.name
+  elseif mention.type == "thread" then
+    return mention.id
+  elseif mention.type == "recent" then
+    return mention.count and tostring(mention.count) or "all"
+  end
+  return mention.raw
+end
+
+local function record_from_mention(mention)
+  local resolved = true
+  local error = nil
+  -- Terminal output capture isn't wired up yet, but the mention still
+  -- gets an explicit fallback block when assembling the prompt — so it
+  -- stays "unresolved" in the transcript but produces a non-empty prompt
+  -- contribution describing the gap.
+  if mention.type == "terminal" then
+    resolved = false
+    error = "terminal output capture is not available"
+  end
+  return {
+    raw = mention.raw,
+    type = mention.type,
+    label = summary_label(mention),
+    source = record_source(mention),
+    resolved = resolved,
+    error = error,
+    start_byte = mention.start_byte,
+    end_byte = mention.end_byte,
+    mention = mention,
+  }
+end
+
 ---@param input string
 ---@param cwd? string
----@return string[]
-function M.summary(input, cwd)
-  local labels = {}
+---@return table[]
+function M.records(input, cwd)
+  local records = {}
+  local resolved_raw = {}
   for _, mention in ipairs(M.parse(input or "", cwd)) do
-    labels[#labels + 1] = summary_label(mention)
+    local record = record_from_mention(mention)
+    records[#records + 1] = record
+    if record.raw then
+      resolved_raw[record.raw] = true
+    end
+  end
+  for _, token in ipairs(raw_mention_tokens(input or "")) do
+    if not resolved_raw[token.raw] then
+      records[#records + 1] = {
+        raw = token.raw,
+        type = "unknown",
+        label = token.raw,
+        source = token.token,
+        resolved = false,
+        error = "unresolved context mention",
+        start_byte = token.start_byte,
+        end_byte = token.end_byte,
+      }
+    end
+  end
+  table.sort(records, function(a, b)
+    return (a.start_byte or 0) < (b.start_byte or 0)
+  end)
+  return records
+end
+
+---@param records table[]|nil
+---@return string[]
+function M.summary_from_records(records)
+  local labels = {}
+  for _, record in ipairs(records or {}) do
+    labels[#labels + 1] = record.label or record.raw or ("@" .. tostring(record.type))
   end
   return labels
 end
 
+---@param input string
+---@param cwd? string
+---@return string[]
+function M.summary(input, cwd)
+  return M.summary_from_records(M.records(input or "", cwd))
+end
+
 local function git_branch(cwd)
-  local out = vim.fn.systemlist({ "git", "-C", cwd or vim.fn.getcwd(), "symbolic-ref", "--quiet", "--short", "HEAD" })
+  local out = vim.fn.systemlist({
+    "git",
+    "-C",
+    cwd or vim.fn.getcwd(),
+    "symbolic-ref",
+    "--quiet",
+    "--short",
+    "HEAD",
+  })
   if vim.v.shell_error ~= 0 then
     return nil
   end
@@ -404,14 +533,20 @@ local function format_lsp_block(mention, cwd)
   local LSP = require("zxz.context.lsp")
   local bufnr, row, col = source_position()
   if not bufnr then
-    return { type = "text", text = ("`%s`: no source buffer to inspect."):format(mention.raw) }
+    return {
+      type = "text",
+      text = ("`%s`: no source buffer to inspect."):format(mention.raw),
+    }
   end
   local path = rel_path(cwd, vim.api.nvim_buf_get_name(bufnr))
 
   if mention.lsp_kind == "hover" then
     local hover = LSP.hover_at(bufnr, row, col)
     if not hover or hover == "" then
-      return { type = "text", text = ("`@hover` at %s:%d — no hover info."):format(path, row) }
+      return {
+        type = "text",
+        text = ("`@hover` at %s:%d — no hover info."):format(path, row),
+      }
     end
     return {
       type = "text",
@@ -425,7 +560,10 @@ local function format_lsp_block(mention, cwd)
   elseif mention.lsp_kind == "def" then
     local def = LSP.definition_at(bufnr, row, col)
     if not def then
-      return { type = "text", text = ("`@def` at %s:%d — no definition found."):format(path, row) }
+      return {
+        type = "text",
+        text = ("`@def` at %s:%d — no definition found."):format(path, row),
+      }
     end
     return {
       type = "text",
@@ -434,7 +572,10 @@ local function format_lsp_block(mention, cwd)
   elseif mention.lsp_kind == "symbol" then
     local sym = LSP.symbol_at(bufnr, row, col)
     if not sym then
-      return { type = "text", text = ("`@symbol` at %s:%d — no symbol detected."):format(path, row) }
+      return {
+        type = "text",
+        text = ("`@symbol` at %s:%d — no symbol detected."):format(path, row),
+      }
     end
     return {
       type = "text",
@@ -477,7 +618,9 @@ local function maybe_file_summary(abs_path, rel_label)
   local source = fd:read("*a") or ""
   fd:close()
   local ft = vim.filetype.match({ filename = abs_path })
-  local lines = { ("File %s (%.1f KB, summarized; full body omitted):"):format(rel_label, stat.size / 1024) }
+  local lines = {
+    ("File %s (%.1f KB, summarized; full body omitted):"):format(rel_label, stat.size / 1024),
+  }
   if ft then
     local ok_parser, parser = pcall(vim.treesitter.get_string_parser, source, ft)
     if ok_parser and parser then
@@ -569,10 +712,27 @@ end
 
 local function format_branch_diff_block(mention, cwd)
   cwd = cwd or vim.fn.getcwd()
-  local stat = vim.fn.systemlist({ "git", "-C", cwd, "diff", "--stat", mention.base .. "..." })
-  local diff = vim.fn.systemlist({ "git", "-C", cwd, "diff", "--unified=3", mention.base .. "..." })
+  local stat = vim.fn.systemlist({
+    "git",
+    "-C",
+    cwd,
+    "diff",
+    "--stat",
+    mention.base .. "...",
+  })
+  local diff = vim.fn.systemlist({
+    "git",
+    "-C",
+    cwd,
+    "diff",
+    "--unified=3",
+    mention.base .. "...",
+  })
   if vim.v.shell_error ~= 0 then
-    return { type = "text", text = ("Branch diff `%s`: unavailable."):format(mention.base) }
+    return {
+      type = "text",
+      text = ("Branch diff `%s`: unavailable."):format(mention.base),
+    }
   end
   local max_lines = 300
   if #diff > max_lines then
@@ -624,14 +784,20 @@ local function format_rule_block(mention, cwd)
       }
     end
   end
-  return { type = "text", text = ("Rule `%s`: no matching rule file found."):format(mention.name) }
+  return {
+    type = "text",
+    text = ("Rule `%s`: no matching rule file found."):format(mention.name),
+  }
 end
 
 local function format_thread_block(mention)
   local HistoryStore = require("zxz.core.history_store")
   local entry = HistoryStore.load(mention.id)
   if not entry then
-    return { type = "text", text = ("Thread `%s`: not found."):format(mention.id) }
+    return {
+      type = "text",
+      text = ("Thread `%s`: not found."):format(mention.id),
+    }
   end
   local lines = { ("Thread `%s` (%s):"):format(mention.id, entry.title or "untitled") }
   for _, msg in ipairs(entry.messages or {}) do
@@ -655,82 +821,103 @@ local function format_terminal_block()
   }
 end
 
-function M.to_prompt_blocks(input, cwd)
-  local blocks = { metadata_block(cwd), { type = "text", text = input } }
+---@return table|nil
+local function format_mention_block(mention, cwd)
+  if mention.type == "diagnostics" then
+    return format_diagnostics_block(mention)
+  elseif mention.type == "lsp" then
+    return format_lsp_block(mention, cwd)
+  elseif mention.type == "recent" then
+    return format_recent_block(mention)
+  elseif mention.type == "repomap" then
+    local RepoMap = require("zxz.context.repo_map")
+    return RepoMap.format_block(cwd)
+  elseif mention.type == "test_output" then
+    local TestCommand = require("zxz.context.test_command")
+    local root = require("zxz.core.checkpoint").git_root(cwd or vim.fn.getcwd()) or (cwd or vim.fn.getcwd())
+    local cmd, code, stdout, stderr = TestCommand.run(root)
+    local body = stdout or ""
+    if stderr and stderr ~= "" then
+      body = body .. (body == "" and "" or "\n") .. stderr
+    end
+    local header
+    if cmd == "" then
+      header = "Test command: (not configured)"
+    else
+      header = ("Test command: %s   exit: %s"):format(cmd, code or "?")
+    end
+    return {
+      type = "text",
+      text = table.concat({ header, "```", body, "```" }, "\n"),
+    }
+  elseif mention.type == "fetch" then
+    return format_fetch_block(mention)
+  elseif mention.type == "branch_diff" then
+    return format_branch_diff_block(mention, cwd)
+  elseif mention.type == "rule" then
+    return format_rule_block(mention, cwd)
+  elseif mention.type == "thread" then
+    return format_thread_block(mention)
+  elseif mention.type == "terminal" then
+    return format_terminal_block()
+  elseif mention.type == "file" then
+    local rel = mention.path or vim.fn.fnamemodify(mention.absolute_path, ":~:.")
+    local summary = maybe_file_summary(mention.absolute_path, rel)
+    if summary then
+      return summary
+    end
+    return {
+      type = "resource_link",
+      uri = "file://" .. mention.absolute_path,
+      name = vim.fn.fnamemodify(mention.absolute_path, ":t"),
+    }
+  elseif mention.type == "range" then
+    local lines = read_lines(mention.absolute_path, mention.start_line, mention.end_line, cwd)
+    local numbered = {}
+    for i, line in ipairs(lines) do
+      table.insert(numbered, ("Line %d: %s"):format(mention.start_line + i - 1, line))
+    end
+    return {
+      type = "text",
+      text = table.concat({
+        "<selected_code>",
+        ("<path>%s</path>"):format(mention.absolute_path),
+        ("<line_start>%d</line_start>"):format(mention.start_line),
+        ("<line_end>%d</line_end>"):format(mention.end_line),
+        "<snippet>",
+        table.concat(numbered, "\n"),
+        "</snippet>",
+        "</selected_code>",
+      }, "\n"),
+    }
+  end
+  return nil
+end
 
-  for _, mention in ipairs(M.parse(input, cwd)) do
-    if mention.type == "diagnostics" then
-      table.insert(blocks, format_diagnostics_block(mention))
-    elseif mention.type == "lsp" then
-      table.insert(blocks, format_lsp_block(mention, cwd))
-    elseif mention.type == "recent" then
-      table.insert(blocks, format_recent_block(mention))
-    elseif mention.type == "repomap" then
-      local RepoMap = require("zxz.context.repo_map")
-      table.insert(blocks, RepoMap.format_block(cwd))
-    elseif mention.type == "test_output" then
-      local TestCommand = require("zxz.context.test_command")
-      local root = require("zxz.core.checkpoint").git_root(cwd or vim.fn.getcwd()) or (cwd or vim.fn.getcwd())
-      local cmd, code, stdout, stderr = TestCommand.run(root)
-      local body = stdout or ""
-      if stderr and stderr ~= "" then
-        body = body .. (body == "" and "" or "\n") .. stderr
+---Build provider prompt blocks from structured context records. Records
+---without an embedded `mention` payload (e.g. `unknown` placeholders for
+---unparseable `@tokens`) are intentionally skipped — the transcript still
+---shows them, but the provider doesn't receive a fabricated block.
+---@param input string
+---@param records table[]
+---@param cwd? string
+---@return table[]
+function M.to_prompt_blocks_from_records(input, records, cwd)
+  local blocks = { metadata_block(cwd), { type = "text", text = input } }
+  for _, record in ipairs(records or {}) do
+    local mention = record.mention
+    if mention then
+      local block = format_mention_block(mention, cwd)
+      if block then
+        table.insert(blocks, block)
       end
-      local header
-      if cmd == "" then
-        header = "Test command: (not configured)"
-      else
-        header = ("Test command: %s   exit: %s"):format(cmd, code or "?")
-      end
-      table.insert(blocks, {
-        type = "text",
-        text = table.concat({ header, "```", body, "```" }, "\n"),
-      })
-    elseif mention.type == "fetch" then
-      table.insert(blocks, format_fetch_block(mention))
-    elseif mention.type == "branch_diff" then
-      table.insert(blocks, format_branch_diff_block(mention, cwd))
-    elseif mention.type == "rule" then
-      table.insert(blocks, format_rule_block(mention, cwd))
-    elseif mention.type == "thread" then
-      table.insert(blocks, format_thread_block(mention))
-    elseif mention.type == "terminal" then
-      table.insert(blocks, format_terminal_block())
-    elseif mention.type == "file" then
-      local rel = mention.path or vim.fn.fnamemodify(mention.absolute_path, ":~:.")
-      local summary = maybe_file_summary(mention.absolute_path, rel)
-      if summary then
-        table.insert(blocks, summary)
-      else
-        table.insert(blocks, {
-          type = "resource_link",
-          uri = "file://" .. mention.absolute_path,
-          name = vim.fn.fnamemodify(mention.absolute_path, ":t"),
-        })
-      end
-    elseif mention.type == "range" then
-      local lines = read_lines(mention.absolute_path, mention.start_line, mention.end_line, cwd)
-      local numbered = {}
-      for i, line in ipairs(lines) do
-        table.insert(numbered, ("Line %d: %s"):format(mention.start_line + i - 1, line))
-      end
-      table.insert(blocks, {
-        type = "text",
-        text = table.concat({
-          "<selected_code>",
-          ("<path>%s</path>"):format(mention.absolute_path),
-          ("<line_start>%d</line_start>"):format(mention.start_line),
-          ("<line_end>%d</line_end>"):format(mention.end_line),
-          "<snippet>",
-          table.concat(numbered, "\n"),
-          "</snippet>",
-          "</selected_code>",
-        }, "\n"),
-      })
     end
   end
-
   return blocks
+end
+
+function M.to_prompt_blocks(input, cwd)
+  return M.to_prompt_blocks_from_records(input, M.records(input, cwd), cwd)
 end
 
 return M

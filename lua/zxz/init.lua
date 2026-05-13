@@ -25,6 +25,13 @@ function M.setup(opts)
     require("zxz.context.picker").open()
   end, { desc = "0x0: add context to the active agent prompt" })
 
+  vim.api.nvim_create_user_command("ZxzContextTrim", function(args)
+    require("zxz.chat.context_trim").open(args.args)
+  end, {
+    desc = "0x0: toggle which @mentions feed the next turn",
+    nargs = "?",
+  })
+
   vim.api.nvim_create_user_command("ZxzProfile", function()
     require("zxz.core.profiles").open()
   end, { desc = "0x0: switch agent profile" })
@@ -219,7 +226,9 @@ function M.setup(opts)
 
   vim.api.nvim_create_user_command("ZxzChatAddSelection", function()
     require("zxz.chat.chat").add_visual_selection_from_prev()
-  end, { desc = "Attach the last visual selection from the prior window as a line-range mention" })
+  end, {
+    desc = "Attach the last visual selection from the prior window as a line-range mention",
+  })
 
   vim.api.nvim_create_user_command("ZxzChatDiff", function(args)
     local id = args.args

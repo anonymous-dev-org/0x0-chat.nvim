@@ -55,6 +55,86 @@ mixin(Chat, require("zxz.chat.run_actions"))
 mixin(Chat, require("zxz.chat.run_timeline"))
 mixin(Chat, require("zxz.chat.ephemeral"))
 
+local TERMINAL_TOOL_STATUS = {
+  completed = true,
+  failed = true,
+  cancelled = true,
+}
+
+local function unique_insert(list, seen, value)
+  if not value or value == "" or seen[value] then
+    return
+  end
+  seen[value] = true
+  list[#list + 1] = value
+end
+
+local function files_touched(run)
+  local files = {}
+  local seen = {}
+  for _, path in ipairs((run and run.files_touched) or {}) do
+    unique_insert(files, seen, path)
+  end
+  for _, event in ipairs((run and run.edit_events) or {}) do
+    unique_insert(files, seen, event.path)
+  end
+  return files
+end
+
+local function pending_review_count(run)
+  local count = 0
+  local events = (run and run.edit_events) or {}
+  for _, event in ipairs(events) do
+    local event_status = event.status or "pending"
+    if event_status == "pending" or event_status == "partial" then
+      local hunks = event.hunks or {}
+      if #hunks == 0 then
+        count = count + 1
+      else
+        for _, hunk in ipairs(hunks) do
+          if (hunk.status or event_status) == "pending" then
+            count = count + 1
+          end
+        end
+      end
+    end
+  end
+  if #events == 0 then
+    count = #files_touched(run)
+  end
+  return count
+end
+
+local function blocked_review_count(run)
+  local count = 0
+  for _, event in ipairs((run and run.edit_events) or {}) do
+    local event_status = event.status or "pending"
+    if
+      (event_status == "pending" or event_status == "partial")
+      and (event.summary_only or event.blocked_by_event_id)
+    then
+      count = count + 1
+    end
+  end
+  count = count + #((run and run.edit_event_diagnostics) or {})
+  return count
+end
+
+local function running_tool(run, active_tool_call_id)
+  local latest_running
+  for index = #((run and run.tool_calls) or {}), 1, -1 do
+    local tool = run.tool_calls[index]
+    local is_running = not TERMINAL_TOOL_STATUS[tool.status]
+    if tool.tool_call_id == active_tool_call_id and is_running then
+      return tool
+    end
+    if not latest_running and is_running then
+      latest_running = tool
+    end
+  end
+  return latest_running
+end
+
 ---@param tab_page_id integer
 ---@return zxz.Chat
 function Chat.new(tab_page_id)
@@ -83,35 +163,31 @@ function Chat.new(tab_page_id)
     current_run = nil,
     run_ids = {},
     permission_queue = {},
+    pending_trim = {},
   }, Chat)
   self.widget = ChatWidget.new(tab_page_id, self.history, function()
     self:submit()
   end, function()
     self:cancel()
   end, function()
-    local info = {
-      provider = self.provider_name or config.current.provider,
-      model = self.model,
-      mode = self.mode,
-    }
-    if self.current_run and self.in_flight then
-      local tool_count = #(self.current_run.tool_calls or {})
-      local files = 0
-      if self.checkpoint then
-        local ok, list = pcall(Checkpoint.changed_files, self.checkpoint)
-        if ok and type(list) == "table" then
-          files = #list
-        end
-      end
-      info.run = {
-        tool_count = tool_count,
-        files = files,
-        elapsed = os.time() - (self.current_run.started_at or os.time()),
-      }
-    end
-    return info
+    return self:_work_state()
   end)
   return self
+end
+
+---@return table|nil
+function Chat:_work_state()
+  local run = self.current_run
+  if not run or not self.in_flight then
+    return nil
+  end
+  return {
+    running_tool = running_tool(run, self.active_tool_call_id),
+    files_touched = files_touched(run),
+    pending_review = pending_review_count(run),
+    conflicts = #((run and run.conflicts) or {}),
+    blocked = blocked_review_count(run),
+  }
 end
 
 ---@param state string|nil
@@ -206,10 +282,19 @@ end
 function Chat:queue_state()
   local items = {}
   for index, item in ipairs(self.queued_prompts) do
+    local trimmed = 0
+    for _, v in pairs(item.trim or {}) do
+      if v then
+        trimmed = trimmed + 1
+      end
+    end
     items[#items + 1] = {
       index = index,
       id = item.id,
       text = item.text,
+      context_records = item.context_records,
+      context_summary = item.context_summary,
+      trimmed = trimmed,
     }
   end
   return {
@@ -221,12 +306,16 @@ end
 
 ---@param id string
 ---@param text string
-function Chat:_update_queued_history_text(id, text)
+---@param summary? string[]
+---@param records? table[]
+function Chat:_update_queued_history_text(id, text, summary, records)
   for i = #self.history.messages, 1, -1 do
     local msg = self.history.messages[i]
     if msg.type == "user" and msg.id == id then
       msg.text = text
       msg.status = "queued"
+      msg.context_summary = summary
+      msg.context_records = records
       return
     end
   end
@@ -258,7 +347,12 @@ function Chat:queue_update(index, text)
     return false, "queued message cannot be empty"
   end
   item.text = text
-  self:_update_queued_history_text(item.id, text)
+  local records, summary = self:_context_for_prompt(text, self:_session_cwd())
+  item.trim = self:_filter_context_trim(item.trim, records)
+  self:_apply_context_trim(records, item.trim)
+  item.context_records = records
+  item.context_summary = summary
+  self:_update_queued_history_text(item.id, text, summary, records)
   self:_rerender_transcript()
   return true
 end
@@ -288,6 +382,82 @@ function Chat:queue_clear()
   self:_rerender_transcript()
 end
 
+---@param records table[]
+---@param trim table<string, boolean>
+---@return integer kept, integer suppressed
+function Chat:_context_trim_counts(records, trim)
+  local kept, suppressed = 0, 0
+  for _, record in ipairs(records or {}) do
+    if record.raw and trim and trim[record.raw] then
+      suppressed = suppressed + 1
+    else
+      kept = kept + 1
+    end
+  end
+  return kept, suppressed
+end
+
+---@param index integer
+---@return boolean ok
+---@return string|nil err
+function Chat:trim_queued(index)
+  index = tonumber(index)
+  local item = index and self.queued_prompts[index] or nil
+  if not item then
+    return false, "queued message not found"
+  end
+  local records = item.context_records
+  if type(records) ~= "table" then
+    records = self:_context_for_prompt(item.text, self:_session_cwd())
+  end
+  require("zxz.chat.context_trim").open_picker(records, item.trim or {}, function(trim)
+    item.trim = self:_filter_context_trim(trim, records)
+    self:_apply_context_trim(records, item.trim)
+    item.context_records = records
+    item.context_summary = require("zxz.context.reference_mentions").summary_from_records(records)
+    self:_update_queued_history_text(item.id, item.text, item.context_summary, records)
+    local kept, suppressed = self:_context_trim_counts(records, item.trim)
+    vim.notify(("0x0 trim: queued %d has %d kept, %d suppressed"):format(index, kept, suppressed), vim.log.levels.INFO)
+    self:_rerender_transcript()
+  end)
+  return true
+end
+
+---Read the current input, parse its context records, and open the trim
+---picker. With an index, trim that queued message instead. The picker writes
+---back to `pending_trim` or the queued item; `_submit_prompt` consumes and
+---clears current-input trim on submit.
+---@param index? integer
+function Chat:trim_open(index)
+  if index then
+    local ok, err = self:trim_queued(index)
+    if not ok then
+      vim.notify("0x0: " .. (err or "trim failed"), vim.log.levels.ERROR)
+    end
+    return ok, err
+  end
+  if not self.widget or not self.widget.input_buf or not api.nvim_buf_is_valid(self.widget.input_buf) then
+    vim.notify("0x0: chat input not open", vim.log.levels.WARN)
+    return
+  end
+  local text = vim.trim(table.concat(api.nvim_buf_get_lines(self.widget.input_buf, 0, -1, false), "\n"))
+  if text == "" then
+    vim.notify("0x0: input is empty — type a prompt first", vim.log.levels.INFO)
+    return
+  end
+  local cwd = self:_session_cwd() or vim.fn.getcwd()
+  local records = self:_context_for_prompt(text, cwd)
+  require("zxz.chat.context_trim").open_picker(records, self.pending_trim or {}, function(trim)
+    self.pending_trim = self:_filter_context_trim(trim, records)
+    local on, off = self:_context_trim_counts(records, self.pending_trim)
+    vim.notify(("0x0 trim: %d kept, %d suppressed for next turn"):format(on, off), vim.log.levels.INFO)
+  end)
+end
+
+function Chat:trim_clear()
+  self.pending_trim = {}
+end
+
 ---@return boolean ok
 ---@return string|nil err
 function Chat:queue_send_next()
@@ -298,7 +468,10 @@ function Chat:queue_send_next()
   if not item then
     return false, "queue is empty"
   end
-  self:_submit_prompt(item.text, item.id)
+  self:_submit_prompt(item.text, item.id, nil, {
+    context_records = item.context_records,
+    trim = item.trim,
+  })
   return true
 end
 
@@ -680,6 +853,14 @@ end
 
 function M.queue_send_next()
   return for_current_tab():queue_send_next()
+end
+
+function M.trim_open(index)
+  return for_current_tab():trim_open(index)
+end
+
+function M.trim_clear()
+  return for_current_tab():trim_clear()
 end
 
 return M

@@ -24,7 +24,16 @@ function M.make_repo(files)
     system({ "git", "-C", root, "add", "-A" })
     system({ "git", "-C", root, "commit", "-q", "-m", "initial" })
   else
-    system({ "git", "-C", root, "commit", "--allow-empty", "-q", "-m", "initial" })
+    system({
+      "git",
+      "-C",
+      root,
+      "commit",
+      "--allow-empty",
+      "-q",
+      "-m",
+      "initial",
+    })
   end
   return root
 end

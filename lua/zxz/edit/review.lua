@@ -41,6 +41,79 @@ local function write_disk_file(path, content)
   return true
 end
 
+local function read_disk_file(path)
+  local f = io.open(path, "rb")
+  if not f then
+    return nil
+  end
+  local content = f:read("*a")
+  f:close()
+  return content
+end
+
+local function split_content(content)
+  if content == nil or content == "" then
+    return {}
+  end
+  local lines = vim.split(content, "\n", { plain = true })
+  if lines[#lines] == "" then
+    table.remove(lines)
+  end
+  return lines
+end
+
+local function join_lines(lines, had_newline)
+  local content = table.concat(lines, "\n")
+  if had_newline and content ~= "" then
+    content = content .. "\n"
+  end
+  return content
+end
+
+local function hunk_old_block(hunk)
+  return hunk.old_block or hunk.old_lines or {}
+end
+
+local function hunk_new_block(hunk)
+  return hunk.new_block or hunk.new_lines or {}
+end
+
+local function block_matches(lines, start_line, count, expected)
+  expected = expected or {}
+  if count ~= #expected then
+    return false
+  end
+  local start_index = math.max(1, start_line or 1)
+  for i = 1, count do
+    if lines[start_index + i - 1] ~= expected[i] then
+      return false
+    end
+  end
+  return true
+end
+
+local function replace_block(lines, start_line, count, replacement)
+  local start_index = math.max(1, start_line or 1)
+  local remove_count = math.max(0, count or 0)
+  for _ = 1, remove_count do
+    if lines[start_index] ~= nil then
+      table.remove(lines, start_index)
+    end
+  end
+  for i = #(replacement or {}), 1, -1 do
+    table.insert(lines, start_index, replacement[i])
+  end
+end
+
+local function source_buffer_modified(root, path)
+  local abs = root .. "/" .. path
+  local bufnr = vim.fn.bufnr(abs)
+  if bufnr == -1 or not vim.api.nvim_buf_is_valid(bufnr) then
+    return false
+  end
+  return vim.bo[bufnr].modified == true
+end
+
 ---@param root string
 ---@param sha string
 ---@param path string
@@ -170,6 +243,9 @@ local function file_label(state, file)
   local hunks = parsed.hunks and #parsed.hunks or 0
   if parsed.summary_only then
     local reason = (parsed.summary_reason or "summary_only"):gsub("_", " ")
+    if parsed.diagnostic then
+      return ("%s ! %s (diagnostic, %s)"):format(prefix, file.path, reason)
+    end
     if parsed.blocked_by_event_id then
       reason = reason .. " · blocked"
     end
@@ -183,6 +259,9 @@ local function file_header(file)
   local kind = STATUS_LABEL[parsed.type or "modify"] or "M"
   local hunks = parsed.hunks and #parsed.hunks or 0
   if parsed.summary_only then
+    if parsed.diagnostic then
+      return ("! %s (diagnostic)"):format(file.path)
+    end
     local suffix = parsed.blocked_by_event_id and ", blocked" or ""
     return ("%s %s (file-level%s)"):format(kind, file.path, suffix)
   end
@@ -272,6 +351,190 @@ local function render(bufnr)
   state.line_item = line_item
 end
 
+local function sorted_hunk_rows(state)
+  local rows = {}
+  for row, item in pairs(state.line_item or {}) do
+    if item.kind == "hunk_header" then
+      rows[#rows + 1] = row
+    end
+  end
+  table.sort(rows)
+  return rows
+end
+
+local function nearest_hunk_row(state, row)
+  local rows = sorted_hunk_rows(state)
+  if #rows == 0 then
+    return nil
+  end
+  for _, candidate in ipairs(rows) do
+    if candidate >= row then
+      return candidate
+    end
+  end
+  return rows[#rows]
+end
+
+local function hunk_key(file, hunk)
+  if not file or not hunk then
+    return nil
+  end
+  if hunk.event_id and hunk.hunk_id then
+    return table.concat({
+      "event",
+      file.path or "",
+      tostring(hunk.event_id),
+      tostring(hunk.hunk_id),
+    }, "\n")
+  end
+  return table.concat({
+    "diff",
+    file.path or "",
+    tostring(hunk.old_start or ""),
+    tostring(hunk.old_count or ""),
+    table.concat(hunk.old_lines or {}, "\n"),
+    tostring(hunk.new_count or ""),
+    table.concat(hunk.new_lines or {}, "\n"),
+  }, "\n")
+end
+
+local function hunk_old_start(hunk)
+  return tonumber(hunk and hunk.old_start)
+end
+
+local function selection_at_row(state, row)
+  if not state then
+    return nil
+  end
+  for i = row, 1, -1 do
+    local item = state.line_item and state.line_item[i]
+    if item and item.hunk then
+      return {
+        kind = "hunk",
+        file_path = item.file and item.file.path,
+        hunk_key = hunk_key(item.file, item.hunk),
+        old_start = hunk_old_start(item.hunk),
+      }
+    end
+    local file = item and item.file or (state.line_file and state.line_file[i])
+    if file then
+      return {
+        kind = "file",
+        file_path = file.path,
+      }
+    end
+  end
+  return nil
+end
+
+local function row_for_selection(state, selection)
+  if not state or not selection then
+    return nil
+  end
+  if selection.kind == "hunk" and selection.hunk_key then
+    for row, item in pairs(state.line_item or {}) do
+      if item.kind == "hunk_header" and hunk_key(item.file, item.hunk) == selection.hunk_key then
+        return row
+      end
+    end
+  end
+  if selection.file_path then
+    local first_file_row
+    local nearest_hunk_row_in_file
+    for row, item in pairs(state.line_item or {}) do
+      if item.file and item.file.path == selection.file_path then
+        if not first_file_row or row < first_file_row then
+          first_file_row = row
+        end
+        if selection.kind == "hunk" and item.kind == "hunk_header" then
+          if selection.old_start and hunk_old_start(item.hunk) == selection.old_start then
+            return row
+          end
+          if not nearest_hunk_row_in_file or row < nearest_hunk_row_in_file then
+            nearest_hunk_row_in_file = row
+          end
+        end
+      end
+    end
+    if selection.kind == "hunk" then
+      return nearest_hunk_row_in_file or first_file_row
+    end
+    return first_file_row
+  end
+  return nil
+end
+
+local function refresh_path_without_review(state, file)
+  InlineDiff.refresh_path(state.checkpoint, state.root .. "/" .. file.path, { refresh_review = false })
+end
+
+local function save_review_views(bufnr, state)
+  local views = {}
+  for _, winid in ipairs(vim.fn.win_findbuf(bufnr)) do
+    if vim.api.nvim_win_is_valid(winid) then
+      local ok, view = pcall(vim.api.nvim_win_call, winid, vim.fn.winsaveview)
+      if ok and view then
+        views[#views + 1] = {
+          winid = winid,
+          view = view,
+          selection = selection_at_row(state, view.lnum),
+        }
+      end
+    end
+  end
+  return views
+end
+
+local function restore_review_view(bufnr, view, target_row)
+  if not vim.api.nvim_buf_is_valid(bufnr) then
+    return
+  end
+  local line_count = math.max(1, vim.api.nvim_buf_line_count(bufnr))
+  target_row = math.max(1, math.min(target_row or view.lnum or 1, line_count))
+  view.lnum = target_row
+  view.col = 0
+  view.curswant = 0
+  view.topline = math.max(1, math.min(view.topline or 1, line_count))
+  if target_row < view.topline then
+    view.topline = target_row
+  end
+  pcall(vim.fn.winrestview, view)
+end
+
+local function restore_review_views(bufnr, state, views)
+  for _, item in ipairs(views or {}) do
+    if vim.api.nvim_win_is_valid(item.winid) and vim.api.nvim_win_get_buf(item.winid) == bufnr then
+      pcall(vim.api.nvim_win_call, item.winid, function()
+        local target_row = row_for_selection(state, item.selection) or item.view.lnum
+        restore_review_view(bufnr, item.view, target_row)
+      end)
+    end
+  end
+end
+
+local function render_preserving_selection(bufnr)
+  local state = states[bufnr]
+  if not state then
+    return
+  end
+  local views = save_review_views(bufnr, state)
+  render(bufnr)
+  restore_review_views(bufnr, state, views)
+end
+
+local function render_after_action(bufnr, opts)
+  opts = opts or {}
+  local state = states[bufnr]
+  if not state then
+    return
+  end
+  local view = vim.fn.winsaveview()
+  local anchor_row = opts.anchor_row or view.lnum
+  render(bufnr)
+  local target_row = opts.prefer_hunk and nearest_hunk_row(state, anchor_row) or anchor_row
+  restore_review_view(bufnr, view, target_row)
+end
+
 local function current_state()
   local bufnr = vim.api.nvim_get_current_buf()
   return states[bufnr], bufnr
@@ -331,8 +594,68 @@ local function refresh_run_file(state, action, file)
   return restore_path_from(root, run.start_sha, file.path)
 end
 
+local function refresh_run_state(state)
+  if not state or state.kind ~= "run" then
+    return
+  end
+  local refreshed = build_run_state(state.run, state.chat)
+  state.files = refreshed and refreshed.files or {}
+  state.statuses = {}
+end
+
+local function apply_run_hunk(state, file, hunk, action)
+  if not state.run or not state.run.run_id then
+    return false, "run missing"
+  end
+  if source_buffer_modified(state.root, file.path) then
+    return false, "source buffer has unsaved edits; save or revert it before applying run hunk"
+  end
+  local abs = state.root .. "/" .. file.path
+  local current = read_disk_file(abs) or ""
+  local current_lines = split_content(current)
+  local had_newline = current == "" or current:sub(-1) == "\n"
+  local match_start
+  local match_count
+  local expected
+  local replacement
+  if action == "accept" then
+    match_start = hunk.old_start
+    match_count = hunk.old_count
+    expected = hunk_old_block(hunk)
+    replacement = hunk_new_block(hunk)
+  else
+    match_start = hunk.new_start
+    match_count = hunk.new_count
+    expected = hunk_new_block(hunk)
+    replacement = hunk_old_block(hunk)
+  end
+  if not block_matches(current_lines, match_start, match_count, expected) then
+    return false, "hunk is stale; refresh review before applying"
+  end
+  replace_block(current_lines, match_start, match_count, replacement)
+  local content = join_lines(current_lines, had_newline)
+  local target_sha = action == "accept" and state.run.end_sha or state.run.start_sha
+  if target_sha and not exists_in_ref(state.root, target_sha, file.path) and #current_lines == 0 then
+    os.remove(abs)
+  elseif not write_disk_file(abs, content) then
+    return false, "write failed for " .. file.path
+  end
+  if hunk.event_id and hunk.hunk_id then
+    EditEvents.set_source_hunk_status(
+      state.run,
+      hunk.event_id,
+      hunk.hunk_id,
+      action == "accept" and "accepted" or "rejected"
+    )
+  end
+  return true, nil
+end
+
 local function blocked_file_reason(file)
   local parsed = file and file.parsed
+  if parsed and parsed.diagnostic then
+    return "edit-event diagnostic rows are informational"
+  end
   if parsed and parsed.blocked_by_event_id then
     return "resolve earlier event hunks in " .. file.path .. " first"
   end
@@ -348,6 +671,7 @@ local function file_level_only_reason(file)
 end
 
 local function accept_hunk(state, bufnr)
+  local anchor_row = vim.api.nvim_win_get_cursor(0)[1]
   local file, hunk = current_hunk(state)
   if not file or not hunk then
     local reason = file_level_only_reason(current_file(state))
@@ -358,7 +682,16 @@ local function accept_hunk(state, bufnr)
     return false
   end
   if state.kind ~= "checkpoint" then
-    return accept_file(state, bufnr)
+    local ok, err = apply_run_hunk(state, file, hunk, "accept")
+    if not ok then
+      vim.notify("0x0: accept failed: " .. (err or "?"), vim.log.levels.ERROR)
+      return true
+    end
+    refresh_run_state(state)
+    vim.cmd.checktime()
+    render_after_action(bufnr, { anchor_row = anchor_row, prefer_hunk = true })
+    vim.notify("0x0: accepted hunk in " .. file.path, vim.log.levels.INFO)
+    return true
   end
   local ok, err = Ledger.accept_hunk(state.checkpoint, file.path, hunk)
   if not ok then
@@ -366,13 +699,14 @@ local function accept_hunk(state, bufnr)
     return true
   end
   refresh_checkpoint_state(state)
-  InlineDiff.refresh_path(state.checkpoint, state.root .. "/" .. file.path)
-  render(bufnr)
+  refresh_path_without_review(state, file)
+  render_after_action(bufnr, { anchor_row = anchor_row, prefer_hunk = true })
   vim.notify("0x0: accepted hunk in " .. file.path, vim.log.levels.INFO)
   return true
 end
 
 local function reject_hunk(state, bufnr)
+  local anchor_row = vim.api.nvim_win_get_cursor(0)[1]
   local file, hunk = current_hunk(state)
   if not file or not hunk then
     local reason = file_level_only_reason(current_file(state))
@@ -383,7 +717,16 @@ local function reject_hunk(state, bufnr)
     return false
   end
   if state.kind ~= "checkpoint" then
-    return reject_file(state, bufnr)
+    local ok, err = apply_run_hunk(state, file, hunk, "reject")
+    if not ok then
+      vim.notify("0x0: reject failed: " .. (err or "?"), vim.log.levels.ERROR)
+      return true
+    end
+    refresh_run_state(state)
+    vim.cmd.checktime()
+    render_after_action(bufnr, { anchor_row = anchor_row, prefer_hunk = true })
+    vim.notify("0x0: rejected hunk in " .. file.path, vim.log.levels.INFO)
+    return true
   end
   local ok, err = Ledger.reject_hunk(state.checkpoint, file.path, hunk)
   if not ok then
@@ -391,14 +734,15 @@ local function reject_hunk(state, bufnr)
     return true
   end
   refresh_checkpoint_state(state)
-  InlineDiff.refresh_path(state.checkpoint, state.root .. "/" .. file.path)
+  refresh_path_without_review(state, file)
   vim.cmd.checktime()
-  render(bufnr)
+  render_after_action(bufnr, { anchor_row = anchor_row, prefer_hunk = true })
   vim.notify("0x0: rejected hunk in " .. file.path, vim.log.levels.INFO)
   return true
 end
 
 accept_file = function(state, bufnr)
+  local anchor_row = vim.api.nvim_win_get_cursor(0)[1]
   local file = current_file(state)
   if not file then
     return false
@@ -415,7 +759,7 @@ accept_file = function(state, bufnr)
       return true
     end
     refresh_checkpoint_state(state)
-    InlineDiff.refresh_path(state.checkpoint, state.root .. "/" .. file.path)
+    refresh_path_without_review(state, file)
   else
     local ok, err = refresh_run_file(state, "accept", file)
     if not ok then
@@ -425,17 +769,16 @@ accept_file = function(state, bufnr)
     vim.cmd.checktime()
   end
   if state.kind ~= "checkpoint" then
-    if state.run and state.run.run_id then
-      EditEvents.set_path_status(state.run.run_id, file.path, "accepted")
-    end
+    EditEvents.set_source_path_status(state.run, file.path, "accepted")
     state.statuses[file.path] = "accepted"
   end
-  render(bufnr)
+  render_after_action(bufnr, { anchor_row = anchor_row, prefer_hunk = true })
   vim.notify("0x0: accepted " .. file.path, vim.log.levels.INFO)
   return true
 end
 
 reject_file = function(state, bufnr)
+  local anchor_row = vim.api.nvim_win_get_cursor(0)[1]
   local file = current_file(state)
   if not file then
     return false
@@ -452,7 +795,7 @@ reject_file = function(state, bufnr)
       return true
     end
     refresh_checkpoint_state(state)
-    InlineDiff.refresh_path(state.checkpoint, state.root .. "/" .. file.path)
+    refresh_path_without_review(state, file)
   else
     local ok, err = refresh_run_file(state, "reject", file)
     if not ok then
@@ -462,12 +805,10 @@ reject_file = function(state, bufnr)
   end
   vim.cmd.checktime()
   if state.kind ~= "checkpoint" then
-    if state.run and state.run.run_id then
-      EditEvents.set_path_status(state.run.run_id, file.path, "rejected")
-    end
+    EditEvents.set_source_path_status(state.run, file.path, "rejected")
     state.statuses[file.path] = "rejected"
   end
-  render(bufnr)
+  render_after_action(bufnr, { anchor_row = anchor_row, prefer_hunk = true })
   vim.notify("0x0: rejected " .. file.path, vim.log.levels.INFO)
   return true
 end
@@ -532,13 +873,7 @@ local function jump_hunk(direction)
     return false
   end
   local row = vim.api.nvim_win_get_cursor(0)[1]
-  local rows = {}
-  for r, item in pairs(state.line_item) do
-    if item.kind == "hunk_header" then
-      rows[#rows + 1] = r
-    end
-  end
-  table.sort(rows)
+  local rows = sorted_hunk_rows(state)
   local target
   if direction > 0 then
     for _, r in ipairs(rows) do
@@ -681,7 +1016,7 @@ function M.refresh_checkpoint(checkpoint)
   for bufnr, state in pairs(states) do
     if vim.api.nvim_buf_is_valid(bufnr) and state.kind == "checkpoint" and state.checkpoint == checkpoint then
       refresh_checkpoint_state(state)
-      render(bufnr)
+      render_preserving_selection(bufnr)
     end
   end
 end

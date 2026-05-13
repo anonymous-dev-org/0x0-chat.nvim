@@ -95,6 +95,27 @@ describe("reference_mentions @diagnostics", function()
     }, labels)
   end)
 
+  it("builds structured context records for durable provenance", function()
+    local root = vim.fn.tempname()
+    vim.fn.mkdir(root, "p")
+    vim.fn.writefile({ "hello" }, root .. "/a.txt")
+
+    local records = ReferenceMentions.records("use @a.txt and @missing.txt and @terminal", root)
+
+    assert.are.equal(3, #records)
+    assert.are.equal("file", records[1].type)
+    assert.are.equal("@a.txt", records[1].label)
+    assert.is_true(records[1].resolved)
+    assert.are.equal("unknown", records[2].type)
+    assert.are.equal("@missing.txt", records[2].label)
+    assert.is_false(records[2].resolved)
+    assert.are.equal("unresolved context mention", records[2].error)
+    assert.are.equal("terminal", records[3].type)
+    assert.is_false(records[3].resolved)
+
+    vim.fn.delete(root, "rf")
+  end)
+
   it("does not match @-tokens embedded in emails or mid-word", function()
     -- bob@example.com → no mention.
     -- README.md@v2 → no mention (mid-word @).
@@ -107,5 +128,31 @@ describe("reference_mentions @diagnostics", function()
   it("matches @-tokens after opening punctuation", function()
     local mentions = ReferenceMentions.parse("see (@diagnostics) and [@hover] and {@def}", vim.fn.getcwd())
     assert.are.equal(3, #mentions)
+  end)
+
+  it("builds prompt blocks from stored records without re-parsing", function()
+    local root = vim.fn.tempname()
+    vim.fn.mkdir(root, "p")
+    vim.fn.writefile({ "alpha", "beta", "gamma" }, root .. "/a.txt")
+
+    local records = ReferenceMentions.records("use @a.txt#L1-L2 and @missing.txt", root)
+    -- Replace the prompt text entirely; blocks should still come from
+    -- the records' embedded mentions, not from re-parsing this string.
+    local blocks = ReferenceMentions.to_prompt_blocks_from_records("decoy text", records, root)
+
+    local found_range, found_unknown
+    for _, b in ipairs(blocks) do
+      if b.type == "text" and b.text and b.text:find("<selected_code>", 1, true) then
+        found_range = b.text
+      end
+      if b.type == "text" and b.text and b.text:find("missing", 1, true) then
+        found_unknown = true
+      end
+    end
+    assert.is_truthy(found_range)
+    assert.is_truthy(found_range:find("Line 1: alpha", 1, true))
+    assert.is_falsy(found_unknown) -- unresolved records produce no provider block
+
+    vim.fn.delete(root, "rf")
   end)
 end)

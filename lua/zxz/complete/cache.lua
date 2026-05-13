@@ -50,7 +50,11 @@ function M.log_outcome(outcome, key)
   if #key_digest > 80 then
     key_digest = key_digest:sub(1, 80) .. "..."
   end
-  fd:write(vim.json.encode({ at = os.time(), outcome = outcome, key_digest = key_digest }) .. "\n")
+  fd:write(vim.json.encode({
+    at = os.time(),
+    outcome = outcome,
+    key_digest = key_digest,
+  }) .. "\n")
   fd:close()
 end
 

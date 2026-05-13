@@ -20,6 +20,52 @@ describe("inline_ask", function()
     assert.is_truthy(prompt:find("Question: what does this do?", 1, true))
   end)
 
+  it("builds focused range prompts for hunk-scoped ask", function()
+    local ctx = {
+      rel_path = "foo/bar.lua",
+      cursor_line = 12,
+      start_line = 8,
+      end_line = 10,
+      filetype = "lua",
+      focused_range = true,
+      symbol = "M.greet",
+      lines = { "function M.greet(n)", "  return 'hi ' .. n", "end" },
+    }
+    local prompt = InlineAsk._build_user_prompt(ctx, "is this correct?")
+    assert.is_truthy(prompt:find("File: foo/bar.lua:8%-10", 1))
+    assert.is_truthy(prompt:find("Focused code range %(lines 8%-10%)", 1))
+    assert.is_truthy(prompt:find("Question: is this correct?", 1, true))
+  end)
+
+  it("includes diff hunk context for deletion-heavy asks", function()
+    local ctx = {
+      rel_path = "foo/bar.lua",
+      cursor_line = 8,
+      start_line = 8,
+      end_line = 8,
+      filetype = "lua",
+      focused_range = true,
+      symbol = nil,
+      lines = { "next()" },
+      hunk_context = {
+        old_start = 8,
+        old_count = 2,
+        new_start = 8,
+        new_count = 0,
+        diff_lines = {
+          "@@ -8,2 +8,0 @@",
+          "-old()",
+          "-gone()",
+        },
+      },
+    }
+    local prompt = InlineAsk._build_user_prompt(ctx, "why remove this?")
+    assert.is_truthy(prompt:find("Related diff hunk:", 1, true))
+    assert.is_truthy(prompt:find("-old()", 1, true))
+    assert.is_truthy(prompt:find("Old-side lines: 8-9", 1, true))
+    assert.is_truthy(prompt:find("New-side insertion point: 8", 1, true))
+  end)
+
   it("permission handler returns an option-id string (not a table)", function()
     local Ephemeral = require("zxz.chat.ephemeral")
     -- The handlers are constructed inside run_inline_ask; rebuild the

@@ -144,12 +144,39 @@ describe("checkpoint", function()
     assert.is_truthy(tool_cp)
     assert.is_truthy(tool_cp.ref:find("tool_call_001"))
     -- The tool checkpoint's commit chains onto the turn checkpoint.
-    local parents = vim.fn.systemlist({ "git", "-C", root, "rev-list", "--parents", "-n", "1", tool_cp.sha })
+    local parents = vim.fn.systemlist({
+      "git",
+      "-C",
+      root,
+      "rev-list",
+      "--parents",
+      "-n",
+      "1",
+      tool_cp.sha,
+    })
     assert.is_truthy(parents[1]:find(turn_cp.sha, 1, true))
     -- The diff between turn and tool checkpoint surfaces the tool edit.
-    local diff = vim.fn.system({ "git", "-C", root, "diff", turn_cp.sha, tool_cp.sha, "--", "src/a.lua" })
+    local diff = vim.fn.system({
+      "git",
+      "-C",
+      root,
+      "diff",
+      turn_cp.sha,
+      tool_cp.sha,
+      "--",
+      "src/a.lua",
+    })
     assert.are.equal("", diff) -- src/a.lua wasn't modified at this stage
-    local diff2 = vim.fn.system({ "git", "-C", root, "diff", turn_cp.sha, tool_cp.sha, "--", "a.txt" })
+    local diff2 = vim.fn.system({
+      "git",
+      "-C",
+      root,
+      "diff",
+      turn_cp.sha,
+      tool_cp.sha,
+      "--",
+      "a.txt",
+    })
     assert.is_truthy(diff2:find("after%-tool%-1"))
   end)
 

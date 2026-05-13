@@ -50,7 +50,10 @@ function M.new(provider, opts)
     end,
     on_idle = function(ms)
       log.error(("acp[%s]: idle for %d ms — provider considered hung"):format(provider.name or provider.command, ms))
-      self:_fail_all_pending({ code = -32001, message = "provider hung (no I/O)" })
+      self:_fail_all_pending({
+        code = -32001,
+        message = "provider hung (no I/O)",
+      })
     end,
   }, { idle_kill_ms = config.current.idle_kill_ms or 0 })
 
@@ -126,7 +129,11 @@ function Client:request(method, params, callback)
           end)
         end
         log.warn(("acp: request '%s' (id=%d) timed out after %d ms"):format(method, id, timeout))
-        pcall(pending.cb, nil, { code = -32001, message = "request timed out", data = { method = method } })
+        pcall(pending.cb, nil, {
+          code = -32001,
+          message = "request timed out",
+          data = { method = method },
+        })
       end)
     )
   end
@@ -135,21 +142,34 @@ function Client:request(method, params, callback)
     self.transport:set_idle_armed(true)
   end
 
-  local data = vim.json.encode({ jsonrpc = "2.0", id = id, method = method, params = params or vim.empty_dict() })
+  local data = vim.json.encode({
+    jsonrpc = "2.0",
+    id = id,
+    method = method,
+    params = params or vim.empty_dict(),
+  })
   self.transport:send(data)
 end
 
 ---@param method string
 ---@param params table|nil
 function Client:notify(method, params)
-  local data = vim.json.encode({ jsonrpc = "2.0", method = method, params = params or vim.empty_dict() })
+  local data = vim.json.encode({
+    jsonrpc = "2.0",
+    method = method,
+    params = params or vim.empty_dict(),
+  })
   self.transport:send(data)
 end
 
 ---@param id integer
 ---@param result table|nil
 function Client:respond(id, result)
-  local data = vim.json.encode({ jsonrpc = "2.0", id = id, result = result or vim.empty_dict() })
+  local data = vim.json.encode({
+    jsonrpc = "2.0",
+    id = id,
+    result = result or vim.empty_dict(),
+  })
   self.transport:send(data)
 end
 

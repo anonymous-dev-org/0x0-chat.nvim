@@ -40,7 +40,15 @@ local function list_files()
   if vim.v.shell_error == 0 and #output > 0 then
     files = output
   elseif vim.fn.executable("find") == 1 then
-    output = vim.fn.systemlist({ "find", ".", "-type", "f", "-not", "-path", "*/.git/*" })
+    output = vim.fn.systemlist({
+      "find",
+      ".",
+      "-type",
+      "f",
+      "-not",
+      "-path",
+      "*/.git/*",
+    })
     for _, path in ipairs(output) do
       table.insert(files, (path:gsub("^%./", "")))
     end

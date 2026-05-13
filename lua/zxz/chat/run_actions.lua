@@ -39,6 +39,83 @@ local function exists_in_ref(root, sha, path)
 end
 
 ---@param path string
+---@return boolean
+local function safe_repo_path(path)
+  if type(path) ~= "string" or path == "" then
+    return false
+  end
+  if path:sub(1, 1) == "/" then
+    return false
+  end
+  for part in path:gmatch("[^/]+") do
+    if part == ".." then
+      return false
+    end
+  end
+  return true
+end
+
+---@param root string
+---@param sha string
+---@param path string
+---@return string|nil content
+local function content_in_ref(root, sha, path)
+  if not exists_in_ref(root, sha, path) then
+    return nil
+  end
+  local out = vim.fn.system({ "git", "-C", root, "show", sha .. ":" .. path })
+  if vim.v.shell_error ~= 0 then
+    return nil
+  end
+  return out
+end
+
+---@param path string
+---@return string|nil content
+local function read_disk_file(path)
+  local f = io.open(path, "rb")
+  if not f then
+    return nil
+  end
+  local content = f:read("*a")
+  f:close()
+  return content
+end
+
+---@param root string
+---@param path string
+---@return boolean
+local function modified_open_buffer(root, path)
+  local bufnr = vim.fn.bufnr(root .. "/" .. path)
+  if bufnr == -1 or not vim.api.nvim_buf_is_valid(bufnr) then
+    return false
+  end
+  return vim.bo[bufnr].modified == true
+end
+
+---@param root string
+---@param run table
+---@param files string[]
+---@return boolean ok, string|nil err
+local function validate_run_restore(root, run, files)
+  for _, path in ipairs(files) do
+    if not safe_repo_path(path) then
+      return false, "unsafe run path " .. tostring(path)
+    end
+    if modified_open_buffer(root, path) then
+      return false, "source buffer has unsaved edits; save or revert it before applying run"
+    end
+    local current = read_disk_file(root .. "/" .. path)
+    local start = run.start_sha and content_in_ref(root, run.start_sha, path) or nil
+    local finish = run.end_sha and content_in_ref(root, run.end_sha, path) or nil
+    if current ~= start and current ~= finish then
+      return false, ("worktree changed since run finished; review %s before applying run"):format(path)
+    end
+  end
+  return true, nil
+end
+
+---@param path string
 ---@param content string
 ---@return boolean ok, string|nil err
 local function write_disk_file(path, content)
@@ -108,13 +185,19 @@ function M:run_accept(run_id)
   local root = run.root or self.repo_root or Checkpoint.git_root(vim.fn.getcwd())
   if not root then
     vim.notify("0x0: not in a git repository", vim.log.levels.ERROR)
-    return
+    return false
+  end
+
+  local valid, verr = validate_run_restore(root, run, files)
+  if not valid then
+    vim.notify("0x0: accept failed: " .. (verr or "?"), vim.log.levels.ERROR)
+    return false
   end
 
   local ok, err = restore_paths_from(root, run.end_sha, files)
   if not ok then
     vim.notify("0x0: accept failed: " .. (err or "?"), vim.log.levels.ERROR)
-    return
+    return false
   end
 
   local add_args = { "git", "-C", root, "add", "--" }
@@ -124,7 +207,7 @@ function M:run_accept(run_id)
   local add_out = vim.fn.system(add_args)
   if vim.v.shell_error ~= 0 then
     vim.notify("0x0: git add failed: " .. (add_out or ""), vim.log.levels.ERROR)
-    return
+    return false
   end
 
   local summary = run.prompt_summary or "0x0 run"
@@ -138,7 +221,7 @@ function M:run_accept(run_id)
     -- through and still flip the status so the user has a record.
     if not commit_out:lower():match("nothing to commit") then
       vim.notify("0x0: commit failed: " .. commit_out, vim.log.levels.ERROR)
-      return
+      return false
     end
   end
 
@@ -148,6 +231,7 @@ function M:run_accept(run_id)
     ("0x0: accepted run %s (%d file%s)"):format(run.run_id, #files, #files == 1 and "" or "s"),
     vim.log.levels.INFO
   )
+  return true
 end
 
 ---@param run_id? string
@@ -170,13 +254,19 @@ function M:run_reject(run_id)
   local root = run.root or self.repo_root or Checkpoint.git_root(vim.fn.getcwd())
   if not root then
     vim.notify("0x0: not in a git repository", vim.log.levels.ERROR)
-    return
+    return false
+  end
+
+  local valid, verr = validate_run_restore(root, run, files)
+  if not valid then
+    vim.notify("0x0: reject failed: " .. (verr or "?"), vim.log.levels.ERROR)
+    return false
   end
 
   local ok, err = restore_paths_from(root, run.start_sha, files)
   if not ok then
     vim.notify("0x0: reject failed: " .. (err or "?"), vim.log.levels.ERROR)
-    return
+    return false
   end
 
   vim.cmd.checktime()
@@ -185,6 +275,7 @@ function M:run_reject(run_id)
     ("0x0: rejected run %s (%d file%s)"):format(run.run_id, #files, #files == 1 and "" or "s"),
     vim.log.levels.INFO
   )
+  return true
 end
 
 return M

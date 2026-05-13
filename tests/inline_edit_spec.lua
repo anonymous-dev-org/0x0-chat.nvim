@@ -58,4 +58,31 @@ describe("inline_edit", function()
     assert.is_truthy(prompt:find("Constraints:", 1, true))
     assert.is_truthy(prompt:find("Instruction: make it shout", 1, true))
   end)
+
+  it("includes diff hunk context for deletion-heavy edits", function()
+    local scope = {
+      rel_path = "foo/bar.lua",
+      start_line = 10,
+      end_line = 10,
+      filetype = "lua",
+      scope_kind = "selection",
+      scope_name = "lines 10-10",
+      lines = { "after()" },
+      hunk_context = {
+        old_start = 10,
+        old_count = 2,
+        new_start = 10,
+        new_count = 0,
+        diff_lines = {
+          "@@ -10,2 +10,0 @@",
+          "-old()",
+          "-gone()",
+        },
+      },
+    }
+    local prompt = InlineEdit._build_prompt(scope, "rework this deletion")
+    assert.is_truthy(prompt:find("Related diff hunk:", 1, true))
+    assert.is_truthy(prompt:find("-gone()", 1, true))
+    assert.is_truthy(prompt:find("deleted%-only hunk", 1))
+  end)
 end)

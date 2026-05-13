@@ -4,6 +4,7 @@
 ---@field text string
 ---@field status? "active"|"queued"
 ---@field context_summary? string[]
+---@field context_records? table[]
 
 ---@class zxz.history.AgentMessage
 ---@field type "agent"|"thought"
@@ -62,11 +63,19 @@ end
 ---@param text string
 ---@param status? "active"|"queued"
 ---@param context_summary? string[]
+---@param context_records? table[]
 ---@return string id
-function History:add_user(text, status, context_summary)
+function History:add_user(text, status, context_summary, context_records)
   local id = tostring(self.next_id)
   self.next_id = self.next_id + 1
-  self:add({ type = "user", id = id, text = text, status = status or "active", context_summary = context_summary })
+  self:add({
+    type = "user",
+    id = id,
+    text = text,
+    status = status or "active",
+    context_summary = context_summary,
+    context_records = context_records,
+  })
   return id
 end
 
@@ -77,6 +86,20 @@ function History:set_user_status(id, status)
     local msg = self.messages[i]
     if msg.type == "user" and msg.id == id then
       msg.status = status
+      return
+    end
+  end
+end
+
+---@param id string
+---@param summary? string[]
+---@param records? table[]
+function History:set_user_context(id, summary, records)
+  for i = #self.messages, 1, -1 do
+    local msg = self.messages[i]
+    if msg.type == "user" and msg.id == id then
+      msg.context_summary = summary
+      msg.context_records = records
       return
     end
   end

@@ -148,7 +148,14 @@ local function replace_file_in_checkpoint(checkpoint, path, content)
   if vim.v.shell_error ~= 0 or sha == "" then
     return false, "failed to commit checkpoint update"
   end
-  local _, ref_code = systemlist({ "git", "-C", checkpoint.root, "update-ref", checkpoint.ref, sha })
+  local _, ref_code = systemlist({
+    "git",
+    "-C",
+    checkpoint.root,
+    "update-ref",
+    checkpoint.ref,
+    sha,
+  })
   if ref_code ~= 0 then
     return false, "failed to update checkpoint ref"
   end
@@ -230,7 +237,14 @@ function M.is_valid(checkpoint)
   if not checkpoint or not checkpoint.ref or not checkpoint.root then
     return false
   end
-  local _, code = systemlist({ "git", "-C", checkpoint.root, "rev-parse", "--verify", checkpoint.ref })
+  local _, code = systemlist({
+    "git",
+    "-C",
+    checkpoint.root,
+    "rev-parse",
+    "--verify",
+    checkpoint.ref,
+  })
   return code == 0
 end
 
@@ -253,7 +267,16 @@ function M.changed_files(checkpoint, paths)
   if not current then
     return {}
   end
-  local args = { "git", "-C", checkpoint.root, "diff-tree", "-r", "--name-only", checkpoint.ref, current }
+  local args = {
+    "git",
+    "-C",
+    checkpoint.root,
+    "diff-tree",
+    "-r",
+    "--name-only",
+    checkpoint.ref,
+    current,
+  }
   if paths and #paths > 0 then
     table.insert(args, "--")
     vim.list_extend(args, paths)
@@ -308,7 +331,13 @@ function M.read_file(checkpoint, path)
   if not M.is_valid(checkpoint) then
     return nil, false
   end
-  local out, code = system({ "git", "-C", checkpoint.root, "show", checkpoint.ref .. ":" .. path })
+  local out, code = system({
+    "git",
+    "-C",
+    checkpoint.root,
+    "show",
+    checkpoint.ref .. ":" .. path,
+  })
   if code ~= 0 then
     return nil, false
   end
@@ -348,13 +377,26 @@ function M.restore_file(checkpoint, path)
   if not M.is_valid(checkpoint) then
     return false, "checkpoint invalid"
   end
-  local _, exists = systemlist({ "git", "-C", checkpoint.root, "cat-file", "-e", checkpoint.ref .. ":" .. path })
+  local _, exists = systemlist({
+    "git",
+    "-C",
+    checkpoint.root,
+    "cat-file",
+    "-e",
+    checkpoint.ref .. ":" .. path,
+  })
   local abs = checkpoint.root .. "/" .. path
   if exists ~= 0 then
     vim.fn.delete(abs)
     return true, nil
   end
-  local content, code = system({ "git", "-C", checkpoint.root, "show", checkpoint.ref .. ":" .. path })
+  local content, code = system({
+    "git",
+    "-C",
+    checkpoint.root,
+    "show",
+    checkpoint.ref .. ":" .. path,
+  })
   if code ~= 0 then
     return false, "git show failed for " .. path
   end
@@ -398,7 +440,14 @@ function M.delete_ref(checkpoint)
   if not checkpoint or not checkpoint.ref or not checkpoint.root then
     return
   end
-  systemlist({ "git", "-C", checkpoint.root, "update-ref", "-d", checkpoint.ref })
+  systemlist({
+    "git",
+    "-C",
+    checkpoint.root,
+    "update-ref",
+    "-d",
+    checkpoint.ref,
+  })
 end
 
 ---Prune old checkpoint refs, keeping the newest `keep_n`.

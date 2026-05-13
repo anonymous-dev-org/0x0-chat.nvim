@@ -17,6 +17,15 @@ local SYSTEM_PROMPT = table.concat({
 
 local DEFAULT_CONTEXT_LINES = 20
 
+local function hunk_side_label(label, start_line, count)
+  start_line = tonumber(start_line) or 0
+  count = tonumber(count) or 0
+  if count == 0 then
+    return ("%s insertion point: %d"):format(label, start_line)
+  end
+  return ("%s lines: %d-%d"):format(label, start_line, start_line + count - 1)
+end
+
 ---@param bufnr integer
 ---@return string|nil
 local function symbol_under_cursor(bufnr)
@@ -35,8 +44,9 @@ end
 
 ---@param bufnr integer
 ---@param context_lines integer
+---@param range? { start_line: integer, end_line: integer }
 ---@return table
-local function gather_context(bufnr, context_lines)
+local function gather_context(bufnr, context_lines, range)
   local abs_path = vim.api.nvim_buf_get_name(bufnr)
   local root = Checkpoint.git_root(vim.fn.getcwd())
   local rel
@@ -52,6 +62,14 @@ local function gather_context(bufnr, context_lines)
   local total = vim.api.nvim_buf_line_count(bufnr)
   local start_line = math.max(1, cursor_line - context_lines)
   local end_line = math.min(total, cursor_line + context_lines)
+  local focused_range = false
+  if range then
+    start_line = math.max(1, tonumber(range.start_line) or cursor_line)
+    end_line = math.max(start_line, tonumber(range.end_line) or start_line)
+    start_line = math.min(start_line, total)
+    end_line = math.min(end_line, total)
+    focused_range = true
+  end
   local lines = vim.api.nvim_buf_get_lines(bufnr, start_line - 1, end_line, false)
   return {
     rel_path = rel,
@@ -59,6 +77,7 @@ local function gather_context(bufnr, context_lines)
     start_line = start_line,
     end_line = end_line,
     filetype = vim.bo[bufnr].filetype or "",
+    focused_range = focused_range,
     symbol = symbol_under_cursor(bufnr),
     lines = lines,
   }
@@ -69,18 +88,39 @@ end
 ---@return string
 function M._build_user_prompt(ctx, question)
   local fence = ctx.filetype ~= "" and ctx.filetype or ""
+  local file_label = ("File: %s:%d"):format(ctx.rel_path, ctx.cursor_line)
+  local code_label = ("Surrounding code (lines %d-%d):"):format(ctx.start_line, ctx.end_line)
+  if ctx.focused_range then
+    file_label = ("File: %s:%d-%d"):format(ctx.rel_path, ctx.start_line, ctx.end_line)
+    code_label = ("Focused code range (lines %d-%d):"):format(ctx.start_line, ctx.end_line)
+  end
   local body = {
     SYSTEM_PROMPT,
     "",
-    ("File: %s:%d"):format(ctx.rel_path, ctx.cursor_line),
+    file_label,
     ("Symbol under cursor: %s"):format(ctx.symbol or "(none)"),
     "",
-    ("Surrounding code (lines %d-%d):"):format(ctx.start_line, ctx.end_line),
+    code_label,
     "```" .. fence,
   }
   vim.list_extend(body, ctx.lines)
+  body[#body + 1] = "```"
+  if ctx.hunk_context then
+    local hunk = ctx.hunk_context
+    vim.list_extend(body, {
+      "",
+      "Related diff hunk:",
+      "```diff",
+    })
+    vim.list_extend(body, hunk.diff_lines or {})
+    vim.list_extend(body, {
+      "```",
+      "",
+      hunk_side_label("Old-side", hunk.old_start, hunk.old_count),
+      hunk_side_label("New-side", hunk.new_start, hunk.new_count),
+    })
+  end
   vim.list_extend(body, {
-    "```",
     "",
     ("Question: %s"):format(question),
   })
@@ -183,12 +223,13 @@ function M._stream_chunk_into(buf, chunk)
   vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
 end
 
----@param opts { question?: string, context_lines?: integer, bufnr?: integer }
+---@param opts { question?: string, context_lines?: integer, bufnr?: integer, range?: { start_line: integer, end_line: integer }, hunk_context?: table }
 function M.ask(opts)
   opts = opts or {}
   local bufnr = opts.bufnr or vim.api.nvim_get_current_buf()
   local context_lines = opts.context_lines or DEFAULT_CONTEXT_LINES
-  local ctx = gather_context(bufnr, context_lines)
+  local ctx = gather_context(bufnr, context_lines, opts.range)
+  ctx.hunk_context = opts.hunk_context
 
   local function dispatch(question)
     if not question or question == "" then

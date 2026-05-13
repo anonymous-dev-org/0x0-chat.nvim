@@ -167,7 +167,15 @@ local function list_repo_files(root)
   elseif vim.fn.executable("git") == 1 then
     result = vim.fn.systemlist({ "git", "-C", root, "ls-files" })
   else
-    result = vim.fn.systemlist({ "find", root, "-type", "f", "-not", "-path", "*/.git/*" })
+    result = vim.fn.systemlist({
+      "find",
+      root,
+      "-type",
+      "f",
+      "-not",
+      "-path",
+      "*/.git/*",
+    })
   end
   if vim.v.shell_error ~= 0 or not result then
     return out
@@ -282,7 +290,12 @@ local function build(root, budget)
     entries[#entries + 1] = entry
   end
 
-  return { root = root, entries = entries, truncated = truncated, total_candidates = total }
+  return {
+    root = root,
+    entries = entries,
+    truncated = truncated,
+    total_candidates = total,
+  }
 end
 
 ---@type table<string, boolean>

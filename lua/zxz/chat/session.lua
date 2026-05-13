@@ -168,7 +168,11 @@ function M:_ensure_session(on_session)
         on_session(client, self.session_id, nil)
         return
       end
-      local desired = { mode = self.mode, model = self.model, config_values = vim.deepcopy(self.config_values or {}) }
+      local desired = {
+        mode = self.mode,
+        model = self.model,
+        config_values = vim.deepcopy(self.config_values or {}),
+      }
       client:new_session(cwd, function(result, err)
         if self.client ~= client then
           on_session(nil, nil, { message = "client replaced" })

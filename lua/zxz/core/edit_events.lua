@@ -1,12 +1,106 @@
 local M = {}
 
 local events_by_run = {}
+local diagnostics_by_run = {}
+local run_meta = {}
 local sequence = 0
 
 local DEFAULT_LIMITS = {
   max_content_bytes = 512 * 1024,
   max_diff_bytes = 256 * 1024,
+  max_retained_runs = 64,
+  max_age_seconds = 24 * 60 * 60,
 }
+
+local function current_limits()
+  local ok, config = pcall(require, "zxz.core.config")
+  if ok and config.current and type(config.current.edit_events) == "table" then
+    return vim.tbl_extend("force", DEFAULT_LIMITS, config.current.edit_events)
+  end
+  return vim.deepcopy(DEFAULT_LIMITS)
+end
+
+local function touch_run(run_id, timestamp)
+  if not run_id or run_id == "" then
+    return
+  end
+  run_meta[run_id] = run_meta[run_id] or {}
+  run_meta[run_id].last_seen = math.max(run_meta[run_id].last_seen or 0, timestamp or os.time())
+end
+
+local function run_timestamp(run_id)
+  local meta = run_meta[run_id]
+  if meta and meta.last_seen then
+    return meta.last_seen
+  end
+  local latest = 0
+  for _, event in ipairs(events_by_run[run_id] or {}) do
+    latest = math.max(latest, tonumber(event.timestamp) or 0)
+  end
+  for _, diagnostic in ipairs(diagnostics_by_run[run_id] or {}) do
+    latest = math.max(latest, tonumber(diagnostic.timestamp) or 0)
+  end
+  touch_run(run_id, latest)
+  return latest
+end
+
+local function drop_run(run_id)
+  events_by_run[run_id] = nil
+  diagnostics_by_run[run_id] = nil
+  run_meta[run_id] = nil
+end
+
+local function all_run_ids()
+  local seen = {}
+  local ids = {}
+  for run_id, _ in pairs(events_by_run) do
+    if not seen[run_id] then
+      ids[#ids + 1] = run_id
+      seen[run_id] = true
+    end
+  end
+  for run_id, _ in pairs(diagnostics_by_run) do
+    if not seen[run_id] then
+      ids[#ids + 1] = run_id
+      seen[run_id] = true
+    end
+  end
+  return ids
+end
+
+---@param opts? table
+---@return integer removed
+function M.gc(opts)
+  opts = vim.tbl_extend("force", current_limits(), opts or {})
+  local now = opts.now or os.time()
+  local removed = 0
+  local ids = all_run_ids()
+
+  local max_age = tonumber(opts.max_age_seconds)
+  if max_age and max_age > 0 then
+    for _, run_id in ipairs(vim.deepcopy(ids)) do
+      local seen_at = run_timestamp(run_id)
+      if seen_at > 0 and now - seen_at > max_age then
+        drop_run(run_id)
+        removed = removed + 1
+      end
+    end
+  end
+
+  ids = all_run_ids()
+  local max_runs = tonumber(opts.max_retained_runs)
+  if max_runs and max_runs > 0 and #ids > max_runs then
+    table.sort(ids, function(a, b)
+      return run_timestamp(a) < run_timestamp(b)
+    end)
+    for idx = 1, #ids - max_runs do
+      drop_run(ids[idx])
+      removed = removed + 1
+    end
+  end
+
+  return removed
+end
 
 local function chomp(s)
   return (s or ""):gsub("[\r\n]+$", "")
@@ -209,6 +303,7 @@ function M.from_write(opts)
   local event = {
     id = event_id,
     run_id = opts.run_id,
+    root = opts.root,
     tool_call_id = opts.tool_call_id,
     tool_call_id_source = opts.tool_call_id_source,
     path = path,
@@ -252,6 +347,35 @@ local function find_event(events, event_id)
   return nil
 end
 
+local function set_hunk_status_in_events(events, event_id, hunk_id, status)
+  local event = find_event(events, event_id)
+  if not event then
+    return false
+  end
+  for _, hunk in ipairs(event.hunks or {}) do
+    if hunk.id == hunk_id then
+      hunk.status = status
+      update_event_rollup(event)
+      return true
+    end
+  end
+  return false
+end
+
+local function set_path_status_in_events(events, path, status)
+  local any = false
+  for _, event in ipairs(events or {}) do
+    if event.path == path then
+      event.status = status
+      for _, hunk in ipairs(event.hunks or {}) do
+        hunk.status = status
+      end
+      any = true
+    end
+  end
+  return any
+end
+
 local function mutate_persisted_run(run_id, fn)
   if not run_id or run_id == "" then
     return false
@@ -282,21 +406,26 @@ function M.set_hunk_status(run_id, event_id, hunk_id, status)
   end
   local changed = false
   local function apply(events)
-    local event = find_event(events, event_id)
-    if not event then
-      return false
-    end
-    for _, hunk in ipairs(event.hunks or {}) do
-      if hunk.id == hunk_id then
-        hunk.status = status
-        update_event_rollup(event)
-        return true
-      end
-    end
-    return false
+    return set_hunk_status_in_events(events, event_id, hunk_id, status)
   end
   changed = apply(events_by_run[run_id]) or mutate_persisted_run(run_id, apply)
   return changed
+end
+
+---@param source table|string|nil run table or run_id
+---@param event_id string|nil
+---@param hunk_id string|nil
+---@param status "pending"|"accepted"|"rejected"
+---@return boolean
+function M.set_source_hunk_status(source, event_id, hunk_id, status)
+  if type(source) == "table" then
+    local changed = set_hunk_status_in_events(source.edit_events or {}, event_id, hunk_id, status)
+    if source.run_id then
+      changed = M.set_hunk_status(source.run_id, event_id, hunk_id, status) or changed
+    end
+    return changed
+  end
+  return M.set_hunk_status(source, event_id, hunk_id, status)
 end
 
 ---@param run_id string|nil
@@ -309,20 +438,25 @@ function M.set_path_status(run_id, path, status)
   end
   local changed = false
   local function apply(events)
-    local any = false
-    for _, event in ipairs(events or {}) do
-      if event.path == path then
-        event.status = status
-        for _, hunk in ipairs(event.hunks or {}) do
-          hunk.status = status
-        end
-        any = true
-      end
-    end
-    return any
+    return set_path_status_in_events(events, path, status)
   end
   changed = apply(events_by_run[run_id]) or mutate_persisted_run(run_id, apply)
   return changed
+end
+
+---@param source table|string|nil run table or run_id
+---@param path string|nil
+---@param status "pending"|"accepted"|"rejected"
+---@return boolean
+function M.set_source_path_status(source, path, status)
+  if type(source) == "table" then
+    local changed = set_path_status_in_events(source.edit_events or {}, path, status)
+    if source.run_id then
+      changed = M.set_path_status(source.run_id, path, status) or changed
+    end
+    return changed
+  end
+  return M.set_path_status(source, path, status)
 end
 
 ---@param run_id string|nil
@@ -355,6 +489,41 @@ function M.record(event)
   end
   events_by_run[event.run_id] = events_by_run[event.run_id] or {}
   events_by_run[event.run_id][#events_by_run[event.run_id] + 1] = event
+  touch_run(event.run_id, event.timestamp)
+  M.gc()
+end
+
+---@param source table|string|nil run table or run_id
+---@param diagnostic table
+---@return table|nil diagnostic
+function M.record_diagnostic(source, diagnostic)
+  diagnostic = diagnostic or {}
+  local run_id = diagnostic.run_id
+  if type(source) == "table" then
+    run_id = run_id or source.run_id
+  elseif type(source) == "string" then
+    run_id = run_id or source
+  end
+  if not run_id or run_id == "" then
+    return nil
+  end
+  local entry = {
+    run_id = run_id,
+    path = diagnostic.path,
+    reason = diagnostic.reason or "edit_event_record_failed",
+    message = diagnostic.message,
+    source = diagnostic.source,
+    timestamp = diagnostic.timestamp or os.time(),
+  }
+  diagnostics_by_run[run_id] = diagnostics_by_run[run_id] or {}
+  diagnostics_by_run[run_id][#diagnostics_by_run[run_id] + 1] = entry
+  if type(source) == "table" then
+    source.edit_event_diagnostics = source.edit_event_diagnostics or {}
+    source.edit_event_diagnostics[#source.edit_event_diagnostics + 1] = entry
+  end
+  touch_run(run_id, entry.timestamp)
+  M.gc()
+  return entry
 end
 
 ---@param run_id string|nil
@@ -364,6 +533,21 @@ function M.for_run(run_id)
     return {}
   end
   return events_by_run[run_id] or {}
+end
+
+---@param source table|string|nil run table or run_id
+---@return table[]
+function M.diagnostics_for_run(source)
+  if type(source) == "table" then
+    if type(source.edit_event_diagnostics) == "table" and #source.edit_event_diagnostics > 0 then
+      return source.edit_event_diagnostics
+    end
+    return diagnostics_by_run[source.run_id] or {}
+  end
+  if not source then
+    return {}
+  end
+  return diagnostics_by_run[source] or {}
 end
 
 ---@param run table
@@ -421,13 +605,13 @@ function M.annotate_chunks(chunks, source)
   return chunks
 end
 
-local function pending_event_hunks(event, blocked_by_event_id)
+local function pending_event_hunks(event, blocked_by_event_id, blocked_reason)
   if blocked_by_event_id then
     return {
       type = event.change_type or "modify",
       hunks = {},
       summary_only = true,
-      summary_reason = "resolve_earlier_event_first",
+      summary_reason = blocked_reason or "resolve_earlier_event_first",
       blocked_by_event_id = blocked_by_event_id,
     }
   end
@@ -463,17 +647,100 @@ local function pending_event_hunks(event, blocked_by_event_id)
   return file
 end
 
+local function hunk_range(hunk, side)
+  local start = hunk[(side == "old" and "old_start" or "new_start")] or 0
+  local count = hunk[(side == "old" and "old_count" or "new_count")] or 0
+  local finish = count > 0 and (start + count - 1) or start
+  return start, finish
+end
+
+local function ranges_overlap(a_start, a_end, b_start, b_end)
+  return a_start <= b_end and b_start <= a_end
+end
+
+local function line_neutral(hunk)
+  return (hunk.old_count or 0) == (hunk.new_count or 0) and (hunk.old_count or 0) > 0
+end
+
+local function hunk_conflict(existing, candidate)
+  if not line_neutral(existing) or not line_neutral(candidate) then
+    return true
+  end
+  local existing_old_start, existing_old_end = hunk_range(existing, "old")
+  local candidate_old_start, candidate_old_end = hunk_range(candidate, "old")
+  if ranges_overlap(existing_old_start, existing_old_end, candidate_old_start, candidate_old_end) then
+    return true
+  end
+  local existing_new_start, existing_new_end = hunk_range(existing, "new")
+  local candidate_new_start, candidate_new_end = hunk_range(candidate, "new")
+  return ranges_overlap(existing_new_start, existing_new_end, candidate_new_start, candidate_new_end)
+end
+
+local function mergeable_hunks(existing_hunks, candidate_hunks)
+  for _, candidate in ipairs(candidate_hunks or {}) do
+    if not line_neutral(candidate) then
+      return false
+    end
+    for _, existing in ipairs(existing_hunks or {}) do
+      if hunk_conflict(existing, candidate) then
+        return false
+      end
+    end
+  end
+  return true
+end
+
+local function append_event_chunk(target, event, parsed)
+  vim.list_extend(target.parsed.hunks, parsed.hunks or {})
+  target.lines[#target.lines + 1] = ""
+  vim.list_extend(target.lines, vim.split(event.diff or "", "\n", { plain = true }))
+  target.edit_events[#target.edit_events + 1] = event
+end
+
+local function diagnostic_chunk(diagnostic)
+  local path = diagnostic.path or "(edit events)"
+  local reason = diagnostic.reason or "edit_event_record_failed"
+  return {
+    path = path,
+    lines = {},
+    parsed = {
+      type = "modify",
+      hunks = {},
+      summary_only = true,
+      summary_reason = reason,
+      diagnostic = true,
+      diagnostic_message = diagnostic.message,
+    },
+    edit_event_diagnostics = { diagnostic },
+  }
+end
+
+---@param source table|string|nil run table or run_id
+---@return table[]
+function M.diagnostic_chunks(source)
+  local chunks = {}
+  for _, diagnostic in ipairs(M.diagnostics_for_run(source)) do
+    chunks[#chunks + 1] = diagnostic_chunk(diagnostic)
+  end
+  return chunks
+end
+
 ---@param source table|string|nil run table or run_id
 ---@return table[]
 function M.pending_chunks(source)
   local chunks = {}
-  local first_pending_by_path = {}
+  local by_path = {}
   for _, event in ipairs(events_from_source(source)) do
     if (event.status or "pending") ~= "accepted" and (event.status or "pending") ~= "rejected" then
-      local blocked_by_event_id = first_pending_by_path[event.path]
-      local parsed = pending_event_hunks(event, blocked_by_event_id)
+      local path_state = by_path[event.path] or {
+        hunks = {},
+      }
+      by_path[event.path] = path_state
+      local blocked_by_event_id = path_state.blocked_by_event_id
+      local blocked_reason = path_state.blocked_reason
+      local parsed = pending_event_hunks(event, blocked_by_event_id, blocked_reason)
       if parsed then
-        chunks[#chunks + 1] = {
+        local chunk = {
           path = event.path,
           lines = vim.split(event.diff or "", "\n", { plain = true }),
           parsed = parsed,
@@ -481,8 +748,31 @@ function M.pending_chunks(source)
           event_id = event.id,
           blocked_by_event_id = blocked_by_event_id,
         }
+        if blocked_by_event_id or parsed.summary_only then
+          chunks[#chunks + 1] = chunk
+          path_state.blocked_by_event_id = path_state.blocked_by_event_id or event.id
+          path_state.blocked_reason = path_state.blocked_reason or "resolve_earlier_event_first"
+        elseif not path_state.chunk then
+          chunks[#chunks + 1] = chunk
+          path_state.chunk = chunk
+          vim.list_extend(path_state.hunks, parsed.hunks or {})
+        elseif mergeable_hunks(path_state.hunks, parsed.hunks) then
+          append_event_chunk(path_state.chunk, event, parsed)
+          vim.list_extend(path_state.hunks, parsed.hunks or {})
+        else
+          local blocked = pending_event_hunks(event, path_state.chunk.event_id, "overlapping_event_hunks")
+          chunks[#chunks + 1] = {
+            path = event.path,
+            lines = vim.split(event.diff or "", "\n", { plain = true }),
+            parsed = blocked,
+            edit_events = { event },
+            event_id = event.id,
+            blocked_by_event_id = path_state.chunk.event_id,
+          }
+          path_state.blocked_by_event_id = event.id
+          path_state.blocked_reason = "resolve_earlier_event_first"
+        end
       end
-      first_pending_by_path[event.path] = first_pending_by_path[event.path] or event.id
     end
   end
   return chunks
@@ -513,26 +803,44 @@ end
 ---@param fallback_chunks table[]|nil checkpoint/run diff chunks
 ---@return table[]
 function M.review_chunks(source, fallback_chunks)
-  local chunks = M.pending_chunks(source)
+  local chunks = M.diagnostic_chunks(source)
+  vim.list_extend(chunks, M.pending_chunks(source))
   if not fallback_chunks or #fallback_chunks == 0 then
     return chunks
   end
+  local event_paths = {}
+  for _, event in ipairs(events_from_source(source)) do
+    local bucket = event_paths[event.path] or {
+      hunk_count = 0,
+      has_summary = false,
+    }
+    bucket.hunk_count = bucket.hunk_count + #(event.hunks or {})
+    bucket.has_summary = bucket.has_summary or event.summary_only == true
+    event_paths[event.path] = bucket
+  end
   local by_path = {}
   for _, chunk in ipairs(chunks) do
-    local bucket = by_path[chunk.path] or {
-      first_event_id = chunk.event_id,
-      hunk_count = 0,
-    }
-    bucket.first_event_id = bucket.first_event_id or chunk.event_id
-    bucket.hunk_count = bucket.hunk_count + hunk_count(chunk)
-    by_path[chunk.path] = bucket
+    if not chunk.edit_event_diagnostics then
+      local bucket = by_path[chunk.path] or {
+        first_event_id = chunk.event_id,
+        hunk_count = 0,
+      }
+      bucket.first_event_id = bucket.first_event_id or chunk.event_id
+      bucket.hunk_count = bucket.hunk_count + hunk_count(chunk)
+      by_path[chunk.path] = bucket
+    end
   end
   for _, fallback in ipairs(fallback_chunks) do
     local path = fallback.path
     local bucket = path and by_path[path]
+    local event_bucket = path and event_paths[path]
     if not bucket then
-      chunks[#chunks + 1] = fallback
-    elseif hunk_count(fallback) > bucket.hunk_count then
+      if not event_bucket then
+        chunks[#chunks + 1] = fallback
+      elseif not event_bucket.has_summary and hunk_count(fallback) > event_bucket.hunk_count then
+        chunks[#chunks + 1] = file_level_fallback(fallback, "unattributed_changes", nil)
+      end
+    elseif not (event_bucket and event_bucket.has_summary) and hunk_count(fallback) > bucket.hunk_count then
       chunks[#chunks + 1] = file_level_fallback(fallback, "resolve_event_hunks_first", bucket.first_event_id)
     end
   end
@@ -548,6 +856,13 @@ function M.summary(event)
     return ("edited `%s` (summary only: %s)"):format(event.path or "?", event.summary_reason or "guarded")
   end
   return ("edited `%s` (+%d/-%d)"):format(event.path or "?", adds, dels)
+end
+
+function M._reset()
+  events_by_run = {}
+  diagnostics_by_run = {}
+  run_meta = {}
+  sequence = 0
 end
 
 return M

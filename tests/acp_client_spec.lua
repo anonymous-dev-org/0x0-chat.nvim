@@ -112,7 +112,11 @@ describe("acp_client", function()
       assert.is_nil(got, "prompt should still be in flight")
       -- Manually deliver a response to satisfy the request.
       local prompt_msg = decode_last(state)
-      state.callbacks.on_message({ jsonrpc = "2.0", id = prompt_msg.id, result = { stopReason = "end_turn" } })
+      state.callbacks.on_message({
+        jsonrpc = "2.0",
+        id = prompt_msg.id,
+        result = { stopReason = "end_turn" },
+      })
       vim.wait(50, function()
         return got ~= nil
       end)
@@ -177,7 +181,11 @@ describe("acp_client", function()
         got = { result = result, err = err }
       end)
       local req = decode_last(state)
-      state.callbacks.on_message({ jsonrpc = "2.0", id = req.id, result = { ok = true } })
+      state.callbacks.on_message({
+        jsonrpc = "2.0",
+        id = req.id,
+        result = { ok = true },
+      })
       vim.wait(50, function()
         return got ~= nil
       end)
@@ -205,7 +213,11 @@ describe("acp_client", function()
           return false
         end
         local msg = vim.json.decode(raw)
-        state.callbacks.on_message({ jsonrpc = "2.0", id = msg.id, error = { code = -32603, message = "boom" } })
+        state.callbacks.on_message({
+          jsonrpc = "2.0",
+          id = msg.id,
+          error = { code = -32603, message = "boom" },
+        })
         return true
       end
       respond_error(1)

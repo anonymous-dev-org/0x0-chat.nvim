@@ -4,7 +4,24 @@ local helpers = require("tests.helpers")
 describe("edit_events", function()
   local root
 
+  local function spaced_content(first, second)
+    return table.concat({
+      first,
+      "gap-01",
+      "gap-02",
+      "gap-03",
+      "gap-04",
+      "gap-05",
+      "gap-06",
+      "gap-07",
+      "gap-08",
+      second,
+      "",
+    }, "\n")
+  end
+
   after_each(function()
+    EditEvents._reset()
     helpers.cleanup(root)
     root = nil
   end)
@@ -145,7 +162,85 @@ describe("edit_events", function()
     assert.are.equal("b.txt", chunks[2].path)
   end)
 
-  it("marks later same-file event chunks as order-blocked", function()
+  it("merges independent same-file event chunks", function()
+    local before = spaced_content("old-a", "old-b")
+    local after_first = spaced_content("new-a", "old-b")
+    local after_second = spaced_content("new-a", "new-b")
+    local first = assert(EditEvents.from_write({
+      root = nil,
+      path = "a.txt",
+      abs_path = "/tmp/a.txt",
+      run_id = "run-independent",
+      tool_call_id = "tool-1",
+      before_content = before,
+      after_content = after_first,
+    }))
+    local second = assert(EditEvents.from_write({
+      root = nil,
+      path = "a.txt",
+      abs_path = "/tmp/a.txt",
+      run_id = "run-independent",
+      tool_call_id = "tool-2",
+      before_content = after_first,
+      after_content = after_second,
+    }))
+    EditEvents.record(first)
+    EditEvents.record(second)
+
+    local chunks = EditEvents.pending_chunks("run-independent")
+
+    assert.are.equal(1, #chunks)
+    assert.are.equal("a.txt", chunks[1].path)
+    assert.are.equal(2, #chunks[1].parsed.hunks)
+    assert.are.equal(first.id, chunks[1].parsed.hunks[1].event_id)
+    assert.are.equal(second.id, chunks[1].parsed.hunks[2].event_id)
+    assert.are.equal("tool-1", chunks[1].parsed.hunks[1].tool_call_id)
+    assert.are.equal("tool-2", chunks[1].parsed.hunks[2].tool_call_id)
+  end)
+
+  it("keeps fallback changes visible beside merged same-file event chunks", function()
+    local before = spaced_content("old-a", "old-b")
+    local after_first = spaced_content("new-a", "old-b")
+    local after_second = spaced_content("new-a", "new-b")
+    local first = assert(EditEvents.from_write({
+      root = nil,
+      path = "a.txt",
+      abs_path = "/tmp/a.txt",
+      run_id = "run-mixed-same-file",
+      tool_call_id = "tool-1",
+      before_content = before,
+      after_content = after_first,
+    }))
+    local second = assert(EditEvents.from_write({
+      root = nil,
+      path = "a.txt",
+      abs_path = "/tmp/a.txt",
+      run_id = "run-mixed-same-file",
+      tool_call_id = "tool-2",
+      before_content = after_first,
+      after_content = after_second,
+    }))
+    EditEvents.record(first)
+    EditEvents.record(second)
+
+    local chunks = EditEvents.review_chunks("run-mixed-same-file", {
+      {
+        path = "a.txt",
+        parsed = {
+          type = "modify",
+          hunks = { {}, {}, {} },
+        },
+      },
+    })
+
+    assert.are.equal(2, #chunks)
+    assert.are.equal(2, #chunks[1].parsed.hunks)
+    assert.is_true(chunks[2].parsed.summary_only)
+    assert.are.equal("resolve_event_hunks_first", chunks[2].parsed.summary_reason)
+    assert.are.equal(first.id, chunks[2].blocked_by_event_id)
+  end)
+
+  it("blocks overlapping same-file event chunks", function()
     local first = assert(EditEvents.from_write({
       root = nil,
       path = "a.txt",
@@ -173,6 +268,87 @@ describe("edit_events", function()
     assert.are.equal(1, #chunks[1].parsed.hunks)
     assert.are.equal(0, #chunks[2].parsed.hunks)
     assert.are.equal(first.id, chunks[2].blocked_by_event_id)
-    assert.are.equal("resolve_earlier_event_first", chunks[2].parsed.summary_reason)
+    assert.are.equal("overlapping_event_hunks", chunks[2].parsed.summary_reason)
+  end)
+
+  it("prunes old in-memory runs by age", function()
+    local now = os.time()
+    local old = assert(EditEvents.from_write({
+      root = nil,
+      path = "old.txt",
+      abs_path = "/tmp/old.txt",
+      run_id = "run-old",
+      before_content = "old\n",
+      after_content = "new\n",
+    }))
+    old.timestamp = now - 100
+    local recent = assert(EditEvents.from_write({
+      root = nil,
+      path = "recent.txt",
+      abs_path = "/tmp/recent.txt",
+      run_id = "run-recent",
+      before_content = "old\n",
+      after_content = "new\n",
+    }))
+    recent.timestamp = now
+    EditEvents.record(old)
+    EditEvents.record(recent)
+
+    assert.are.equal(1, EditEvents.gc({ now = now, max_age_seconds = 50, max_retained_runs = 0 }))
+    assert.are.equal(0, #EditEvents.for_run("run-old"))
+    assert.are.equal(1, #EditEvents.for_run("run-recent"))
+  end)
+
+  it("prunes oldest in-memory runs by retained run cap", function()
+    local now = os.time()
+    for idx = 1, 3 do
+      local event = assert(EditEvents.from_write({
+        root = nil,
+        path = ("file-%d.txt"):format(idx),
+        abs_path = ("/tmp/file-%d.txt"):format(idx),
+        run_id = ("run-%d"):format(idx),
+        before_content = "old\n",
+        after_content = "new\n",
+      }))
+      event.timestamp = now + idx
+      EditEvents.record(event)
+    end
+
+    assert.are.equal(1, EditEvents.gc({ max_retained_runs = 2, max_age_seconds = 0 }))
+    assert.are.equal(0, #EditEvents.for_run("run-1"))
+    assert.are.equal(1, #EditEvents.for_run("run-2"))
+    assert.are.equal(1, #EditEvents.for_run("run-3"))
+  end)
+
+  it("records dropped-event diagnostics as informational review chunks", function()
+    local run = {
+      run_id = "run-diagnostic",
+    }
+    local diagnostic = assert(EditEvents.record_diagnostic(run, {
+      path = "a.txt",
+      reason = "edit_event_record_failed",
+      message = "boom",
+      source = "test",
+      timestamp = os.time(),
+    }))
+
+    assert.are.equal(diagnostic, run.edit_event_diagnostics[1])
+
+    local chunks = EditEvents.review_chunks(run, {
+      {
+        path = "a.txt",
+        parsed = {
+          type = "modify",
+          hunks = { {} },
+        },
+      },
+    })
+
+    assert.are.equal(2, #chunks)
+    assert.are.equal("a.txt", chunks[1].path)
+    assert.is_true(chunks[1].parsed.diagnostic)
+    assert.are.equal("edit_event_record_failed", chunks[1].parsed.summary_reason)
+    assert.are.equal("a.txt", chunks[2].path)
+    assert.are.equal(1, #chunks[2].parsed.hunks)
   end)
 end)
