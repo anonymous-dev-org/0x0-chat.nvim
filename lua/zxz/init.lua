@@ -160,16 +160,27 @@ function M.setup(opts)
   vim.api.nvim_create_user_command("ZxzChatRuns", function(args)
     require("zxz.chat.chat").runs_picker(args.bang)
   end, {
-    desc = "Pick a Run to review; with ! filter to the current thread",
+    desc = "Pick an AI task to review; with ! filter to the current chat",
     bang = true,
   })
 
   vim.api.nvim_create_user_command("ZxzRuns", function(args)
     require("zxz.chat.chat").runs_picker(args.bang)
   end, {
-    desc = "0x0: pick an agent run to review",
+    desc = "0x0: pick an AI task to review",
     bang = true,
   })
+
+  vim.api.nvim_create_user_command("ZxzTasks", function(args)
+    require("zxz.chat.chat").tasks_picker(args.bang)
+  end, {
+    desc = "0x0: pick an AI task to review",
+    bang = true,
+  })
+
+  vim.api.nvim_create_user_command("ZxzChats", function()
+    require("zxz.chat.chat").chats_picker()
+  end, { desc = "0x0: pick a saved chat workspace" })
 
   vim.api.nvim_create_user_command("ZxzChatRunAccept", function(args)
     local id = args.args
@@ -178,7 +189,7 @@ function M.setup(opts)
     end
     require("zxz.chat.chat").run_accept(id)
   end, {
-    desc = "Accept a Run: commit files_touched at end_ref to the current branch",
+    desc = "Accept an AI task: restore touched files to the task result",
     nargs = "?",
   })
 
@@ -189,7 +200,7 @@ function M.setup(opts)
     end
     require("zxz.chat.chat").run_reject(id)
   end, {
-    desc = "Reject a Run: restore files_touched to the run's start_ref",
+    desc = "Reject an AI task: restore touched files to the task start",
     nargs = "?",
   })
 
@@ -201,7 +212,7 @@ function M.setup(opts)
     end
     require("zxz.chat.chat").run_headless(prompt)
   end, {
-    desc = "Submit a prompt to the agent without opening the chat sidebar",
+    desc = "Submit a one-shot prompt without opening the chat workspace",
     nargs = "+",
   })
 
@@ -212,7 +223,7 @@ function M.setup(opts)
     end
     require("zxz.chat.chat").run_timeline(id)
   end, {
-    desc = "Pick a tool call from a Run to inspect its per-tool diff",
+    desc = "Pick a tool call from an AI task to inspect its per-tool diff",
     nargs = "?",
   })
 
@@ -327,7 +338,7 @@ function M.setup(opts)
       cwd = vim.fn.getcwd(),
       on_complete = function(rid, status, files)
         vim.notify(
-          ("0x0 detached run %s: %s, %d file%s changed. :ZxzChatRunReview %s"):format(
+          ("0x0 background task %s: %s, %d file%s changed. :ZxzChatRunReview %s"):format(
             rid,
             status,
             #files,
@@ -342,9 +353,9 @@ function M.setup(opts)
       vim.notify("0x0: " .. (err or "spawn failed"), vim.log.levels.ERROR)
       return
     end
-    vim.notify("0x0: spawned detached run " .. run_id, vim.log.levels.INFO)
+    vim.notify("0x0: spawned background task " .. run_id, vim.log.levels.INFO)
   end, {
-    desc = "Spawn a detached autonomous run without opening the chat sidebar",
+    desc = "Spawn an autonomous background task without opening chat",
     nargs = "+",
   })
 
@@ -359,7 +370,7 @@ function M.setup(opts)
       cwd = vim.fn.getcwd(),
       on_complete = function(rid, status, files)
         vim.notify(
-          ("0x0 detached run %s: %s, %d file%s changed. :ZxzChatRunReview %s"):format(
+          ("0x0 background task %s: %s, %d file%s changed. :ZxzChatRunReview %s"):format(
             rid,
             status,
             #files,
@@ -374,9 +385,9 @@ function M.setup(opts)
       vim.notify("0x0: " .. (err or "spawn failed"), vim.log.levels.ERROR)
       return
     end
-    vim.notify("0x0: spawned detached run " .. run_id, vim.log.levels.INFO)
+    vim.notify("0x0: spawned background task " .. run_id, vim.log.levels.INFO)
   end, {
-    desc = "0x0: spawn a detached autonomous agent run",
+    desc = "0x0: spawn an autonomous background AI task",
     nargs = "+",
   })
 
@@ -384,11 +395,11 @@ function M.setup(opts)
     local Registry = require("zxz.core.run_registry")
     local runs = Registry.list()
     if #runs == 0 then
-      vim.notify("0x0: no detached runs in flight", vim.log.levels.INFO)
+      vim.notify("0x0: no background tasks in flight", vim.log.levels.INFO)
       return
     end
     vim.ui.select(runs, {
-      prompt = "0x0 detached runs",
+      prompt = "0x0 background tasks",
       format_item = function(r)
         local when = os.date("%H:%M:%S", r.started_at or 0)
         local prompt_summary = (r.current_run and r.current_run.prompt_summary) or ""
@@ -420,7 +431,7 @@ function M.setup(opts)
         end
       end)
     end)
-  end, { desc = "List detached runs (live)" })
+  end, { desc = "List background AI tasks" })
 
   vim.api.nvim_create_autocmd("VimLeavePre", {
     group = context_augroup,

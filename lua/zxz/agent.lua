@@ -11,10 +11,17 @@ end
 
 local ACTIONS = {
   {
-    label = "Open agent workspace",
-    detail = "Open the persistent chat and run surface.",
+    label = "Open chat workspace",
+    detail = "Open the current AI chat workspace.",
     run = function()
       require("zxz.chat.chat").open()
+    end,
+  },
+  {
+    label = "Recent chats",
+    detail = "Reopen an earlier chat workspace.",
+    run = function()
+      require("zxz.chat.chat").history_picker()
     end,
   },
   {
@@ -67,30 +74,30 @@ local ACTIONS = {
     end,
   },
   {
-    label = "Runs",
-    detail = "Review recorded runs.",
+    label = "Tasks",
+    detail = "Review completed AI work from chats or background tasks.",
     run = function()
       require("zxz.chat.chat").runs_picker(false)
     end,
   },
   {
-    label = "Background runs",
-    detail = "Inspect live detached agents.",
+    label = "Background tasks",
+    detail = "Inspect live background AI tasks.",
     run = function()
       vim.cmd("ZxzRunsDashboard")
     end,
   },
   {
-    label = "Spawn background agent",
-    detail = "Start an autonomous run without opening chat.",
+    label = "Spawn background task",
+    detail = "Start autonomous AI work without keeping chat focused.",
     run = function()
-      input_prompt("agent task: ", function(prompt)
+      input_prompt("background task: ", function(prompt)
         local run_id, err = require("zxz.core.run_registry").spawn({
           prompt = prompt,
           cwd = vim.fn.getcwd(),
           on_complete = function(rid, status, files)
             vim.notify(
-              ("0x0 detached run %s: %s, %d file%s changed. :ZxzChatRunReview %s"):format(
+              ("0x0 background task %s: %s, %d file%s changed. :ZxzChatRunReview %s"):format(
                 rid,
                 status,
                 #files,
@@ -122,7 +129,7 @@ local ACTIONS = {
     end,
   },
   {
-    label = "Cancel current run",
+    label = "Cancel current turn",
     detail = "Stop the active agent turn.",
     run = function()
       require("zxz.chat.chat").cancel()

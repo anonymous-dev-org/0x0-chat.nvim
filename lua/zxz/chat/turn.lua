@@ -365,7 +365,7 @@ function M:_notify_or_continue()
       end
     end
     vim.notify(
-      ("0x0 headless run finished — %d file%s changed. :ZxzChatRunReview %s"):format(
+      ("0x0 one-shot task finished — %d file%s changed. :ZxzChatRunReview %s"):format(
         files,
         files == 1 and "" or "s",
         last_run_id or ""

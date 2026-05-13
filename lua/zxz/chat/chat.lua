@@ -665,6 +665,8 @@ function M.history_picker()
   end)
 end
 
+M.chats_picker = M.history_picker
+
 function M.new()
   for_current_tab():new_session()
 end
@@ -688,11 +690,11 @@ function M.runs_picker(current_thread_only)
     runs = RunsStore.list()
   end
   if #runs == 0 then
-    vim.notify("0x0: no runs recorded", vim.log.levels.INFO)
+    vim.notify("0x0: no AI tasks recorded", vim.log.levels.INFO)
     return
   end
   vim.ui.select(runs, {
-    prompt = current_thread_only and "0x0 runs (this thread)" or "0x0 runs",
+    prompt = current_thread_only and "0x0 tasks in this chat" or "0x0 tasks",
     format_item = function(run)
       local when = os.date("%Y-%m-%d %H:%M", run.started_at or 0)
       local icon = STATUS_ICON[run.status or ""] or "·"
@@ -722,6 +724,8 @@ function M.runs_picker(current_thread_only)
     for_current_tab():run_review(choice.run_id)
   end)
 end
+
+M.tasks_picker = M.runs_picker
 
 function M.submit()
   for_current_tab():submit()
