@@ -34,4 +34,26 @@ describe("agent profiles", function()
     assert.is_false(ok)
     assert.is_truthy(err:find("unknown profile", 1, true))
   end)
+
+  it("resolves completion provider from the shared provider table", function()
+    local provider = assert(config.resolve_completion_provider())
+    assert.are.equal("codex-acp", provider.command)
+    assert.are.same({ "-c", "notify=[]" }, provider.args)
+    assert.are.equal("chatgpt", provider.auth_method)
+  end)
+
+  it("resolves explicit completion ACP command overrides", function()
+    config.setup({
+      complete = {
+        provider = "codex-acp",
+        acp = {
+          command = "custom-acp",
+          args = { "--stdio" },
+        },
+      },
+    })
+    local provider = assert(config.resolve_completion_provider())
+    assert.are.equal("custom-acp", provider.command)
+    assert.are.same({ "--stdio" }, provider.args)
+  end)
 end)

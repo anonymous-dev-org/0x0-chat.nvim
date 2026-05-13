@@ -19,6 +19,38 @@ local _last_cache_key = nil
 ---@type string Accumulated completion text from streaming
 local _streaming_text = ""
 
+---@type string Last displayable completion text from streaming
+local _visible_text = ""
+
+---@type integer Active request generation; used to ignore late async chunks.
+local _request_id = 0
+
+local function resolve_provider()
+  local provider, err = config.resolve_completion_provider()
+  if not provider then
+    vim.notify("0x0 completion: " .. tostring(err or "provider not configured"), vim.log.levels.ERROR)
+    return nil
+  end
+  return provider
+end
+
+local function visible_completion(text, before)
+  text = (text or ""):gsub("^%s*```[%w_-]*\n?", ""):gsub("\n?```%s*$", "")
+  text = text:gsub("[%z\1-\8\11\12\14-\31\127]", "")
+  if before and before ~= "" and text:sub(1, #before) == before then
+    text = text:sub(#before + 1)
+  end
+  local first_line = vim.split(text, "\n", { plain = true })[1] or ""
+  if vim.trim(first_line) == "" then
+    return nil
+  end
+  return first_line
+end
+
+function M._mode()
+  return vim.fn.mode()
+end
+
 --- Set up the completion plugin.
 ---@param opts? table
 function M.setup(opts)
@@ -126,7 +158,7 @@ function M._request_completion()
   local bufnr = vim.api.nvim_get_current_buf()
 
   -- Check we're still in insert mode
-  if vim.fn.mode() ~= "i" then
+  if M._mode() ~= "i" then
     return
   end
 
@@ -134,6 +166,13 @@ function M._request_completion()
   local cursor = vim.api.nvim_win_get_cursor(0)
   local row = cursor[1] - 1 -- 0-based
   local col = cursor[2] -- 0-based
+  local line = vim.api.nvim_buf_get_lines(bufnr, row, row + 1, false)[1] or ""
+  local before = line:sub(1, col)
+  local cwd = vim.fn.getcwd()
+  local provider = resolve_provider()
+  if not provider then
+    return
+  end
 
   -- Check cache
   if cfg.cache.enabled then
@@ -146,22 +185,29 @@ function M._request_completion()
     end
   end
 
+  _request_id = _request_id + 1
+  local request_id = _request_id
   _streaming_text = ""
+  _visible_text = ""
 
-  _abort_fn = client.stream_completion(cfg.acp, {
+  _abort_fn = client.stream_completion(provider, {
     prefix = ctx.prefix,
     suffix = ctx.suffix,
     language = ctx.language,
     filepath = ctx.filepath,
+    cwd = cwd,
     max_tokens = cfg.max_tokens,
     temperature = cfg.temperature,
     model = cfg.model,
   }, function(chunk)
+    if request_id ~= _request_id then
+      return
+    end
     -- On each text chunk
     _streaming_text = _streaming_text .. chunk
 
-    -- Check we're still in insert mode at the same position
-    if vim.fn.mode() ~= "i" then
+    -- Check we're still in insert mode in the same buffer and position.
+    if M._mode() ~= "i" or vim.api.nvim_get_current_buf() ~= bufnr then
       M._cancel()
       return
     end
@@ -172,8 +218,16 @@ function M._request_completion()
       return
     end
 
-    ghost.show(bufnr, row, col, _streaming_text)
+    local display = visible_completion(_streaming_text, before)
+    if not display then
+      return
+    end
+    _visible_text = display
+    ghost.show(bufnr, row, col, display)
   end, function(err)
+    if request_id ~= _request_id then
+      return
+    end
     _abort_fn = nil
 
     if err then
@@ -181,9 +235,9 @@ function M._request_completion()
     end
 
     -- Cache the result
-    if cfg.cache.enabled and _streaming_text ~= "" then
+    if cfg.cache.enabled and _visible_text ~= "" then
       local key = cache.make_key(ctx.prefix, ctx.suffix, ctx.language)
-      cache.set(key, _streaming_text)
+      cache.set(key, _visible_text)
       _last_cache_key = key
     end
   end)
@@ -192,12 +246,14 @@ end
 --- Cancel pending request and clear ghost text.
 function M._cancel()
   debounce.stop()
+  _request_id = _request_id + 1
   if _abort_fn then
     _abort_fn()
     _abort_fn = nil
   end
   ghost.clear()
   _streaming_text = ""
+  _visible_text = ""
 end
 
 --- Dismiss the current completion suggestion.
@@ -229,6 +285,7 @@ end
 --- Cancel request without clearing ghost text.
 function M._cancel_request_only()
   debounce.stop()
+  _request_id = _request_id + 1
   if _abort_fn then
     _abort_fn()
     _abort_fn = nil
@@ -285,6 +342,37 @@ local function choose_max_tokens()
   end)
 end
 
+local function choose_provider()
+  local ids = {}
+  for id in pairs(config.current.providers or {}) do
+    ids[#ids + 1] = id
+  end
+  table.sort(ids)
+  vim.ui.select(ids, {
+    prompt = "0x0 completion provider",
+    format_item = function(id)
+      local provider = config.current.providers[id] or {}
+      return (provider.name and provider.name ~= "" and provider.name or id) .. " (" .. id .. ")"
+    end,
+  }, function(choice)
+    if not choice then
+      return
+    end
+    config.current.complete.provider = choice
+    config.current.complete.acp = nil
+    M.dismiss()
+  end)
+end
+
+local function provider_label()
+  local complete = config.current.complete or {}
+  local override = complete.acp
+  if type(override) == "table" and override.command and override.command ~= "" then
+    return tostring(override.command)
+  end
+  return tostring(complete.provider or config.current.provider or "provider default")
+end
+
 function M.settings()
   local actions = {
     {
@@ -292,8 +380,8 @@ function M.settings()
       run = M.toggle,
     },
     {
-      label = "ACP provider: " .. tostring(config.current.complete.acp.command),
-      run = function() end,
+      label = "Provider: " .. provider_label(),
+      run = choose_provider,
     },
     {
       label = "Model: " .. tostring(config.current.complete.model or "provider default"),

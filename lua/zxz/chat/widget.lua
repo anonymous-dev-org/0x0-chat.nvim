@@ -35,6 +35,7 @@ local ACTIVITY_LABELS = {
   responding = "Working",
 }
 local ACTIVITY_FOOTER_PADDING = 2
+local CHAT_SEPARATOR_STATUSLINE = "%#WinSeparator#%{repeat('─', winwidth(0))}%*"
 
 local PERMISSION_HINT_INLINE = "  — [a] allow once  [A] allow always  [r] reject once  [R] reject always"
 local KEY_TO_KIND = {
@@ -673,6 +674,7 @@ function ChatWidget:open()
     vim.wo[self.transcript_win].relativenumber = false
     vim.wo[self.transcript_win].signcolumn = "no"
     vim.wo[self.transcript_win].winbar = ""
+    vim.wo[self.transcript_win].statusline = CHAT_SEPARATOR_STATUSLINE
     pcall(function()
       vim.wo[self.transcript_win].foldmethod = "expr"
       vim.wo[self.transcript_win].foldexpr = "v:lua.vim.treesitter.foldexpr()"
@@ -911,7 +913,7 @@ function ChatWidget:_render_activity()
   local hl = STATE_HL[self.activity_state] or "Comment"
   local last_line = math.max(api.nvim_buf_line_count(bufnr) - 1, 0)
   self.activity_extmark = api.nvim_buf_set_extmark(bufnr, NS, last_line, 0, {
-    virt_lines = { self:_activity_chunks(spinner, hl, label) },
+    virt_lines = { self:_activity_chunks(spinner, hl, label), { { "", nil } } },
     virt_lines_above = false,
   })
 end

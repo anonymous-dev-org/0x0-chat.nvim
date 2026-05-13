@@ -104,6 +104,7 @@ end
 ---@param method string
 ---@param params table|nil
 ---@param callback fun(result: table|nil, err: table|nil)
+---@return integer id
 function Client:request(method, params, callback)
   local id = self:_next_id()
   local entry = { cb = callback, method = method }
@@ -149,6 +150,28 @@ function Client:request(method, params, callback)
     params = params or vim.empty_dict(),
   })
   self.transport:send(data)
+  return id
+end
+
+---@param id integer|nil
+function Client:forget_request(id)
+  if not id then
+    return
+  end
+  local entry = self.callbacks[id]
+  if not entry then
+    return
+  end
+  self.callbacks[id] = nil
+  if entry.timer then
+    pcall(function()
+      entry.timer:stop()
+      entry.timer:close()
+    end)
+  end
+  if not next(self.callbacks) and self.transport and self.transport.set_idle_armed then
+    self.transport:set_idle_armed(false)
+  end
 end
 
 ---@param method string
@@ -377,14 +400,14 @@ end
 ---@param cwd string
 ---@param callback fun(result: table|nil, err: table|nil)
 function Client:new_session(cwd, callback)
-  self:request("session/new", { cwd = cwd, mcpServers = {} }, callback)
+  return self:request("session/new", { cwd = cwd, mcpServers = {} }, callback)
 end
 
 ---@param session_id string
 ---@param prompt_blocks table[]
 ---@param callback fun(result: table|nil, err: table|nil)
 function Client:prompt(session_id, prompt_blocks, callback)
-  self:request("session/prompt", { sessionId = session_id, prompt = prompt_blocks }, callback)
+  return self:request("session/prompt", { sessionId = session_id, prompt = prompt_blocks }, callback)
 end
 
 ---@param session_id string
@@ -403,7 +426,7 @@ function Client:set_model(session_id, model_id, callback)
     callback(nil, nil)
     return
   end
-  self:request("session/set_model", { sessionId = session_id, modelId = model_id }, callback)
+  return self:request("session/set_model", { sessionId = session_id, modelId = model_id }, callback)
 end
 
 ---@param session_id string
@@ -415,7 +438,11 @@ function Client:set_config_option(session_id, config_id, value, callback)
     callback(nil, nil)
     return
   end
-  self:request("session/set_config_option", { sessionId = session_id, configId = config_id, value = value }, callback)
+  return self:request(
+    "session/set_config_option",
+    { sessionId = session_id, configId = config_id, value = value },
+    callback
+  )
 end
 
 function Client:is_ready()
@@ -440,12 +467,12 @@ local function _completion_key(provider)
   return tostring(provider.command) .. "\0" .. table.concat(provider.args or {}, "\1")
 end
 
-local function _flush_completion_waiters(entry)
+local function _flush_completion_waiters(entry, client, err)
   local waiters = entry.ready_waiters
   entry.ready_waiters = {}
   for _, fn in ipairs(waiters) do
     vim.schedule(function()
-      fn(entry.client)
+      fn(client, err)
     end)
   end
 end
@@ -456,7 +483,7 @@ local function _get_completion_client(provider, on_ready)
   if entry and entry.client and entry.client.state ~= "disconnected" and entry.client.state ~= "error" then
     if entry.authenticated and entry.client:is_ready() then
       vim.schedule(function()
-        on_ready(entry.client)
+        on_ready(entry.client, nil)
       end)
     else
       entry.ready_waiters[#entry.ready_waiters + 1] = on_ready
@@ -474,30 +501,45 @@ local function _get_completion_client(provider, on_ready)
 
   client:start(function(c)
     if not c then
-      entry.ready_waiters = {}
+      _completion_clients[key] = nil
+      _flush_completion_waiters(entry, nil, { message = "completion client unavailable" })
       return
     end
     if provider.auth_method and provider.auth_method ~= "" then
       c:request("authenticate", { methodId = provider.auth_method }, function(_, err)
         if err then
           log.error("acp[completion]: authenticate failed: " .. vim.inspect(err))
-          entry.ready_waiters = {}
+          _completion_clients[key] = nil
+          _flush_completion_waiters(entry, nil, err)
           return
         end
         entry.authenticated = true
-        _flush_completion_waiters(entry)
+        _flush_completion_waiters(entry, c, nil)
       end)
     else
       entry.authenticated = true
-      _flush_completion_waiters(entry)
+      _flush_completion_waiters(entry, c, nil)
     end
   end)
   return client
 end
 
-local function _choose_allow(options)
+local COMPLETION_SAFE_TOOL_KINDS = {
+  read = true,
+  search = true,
+  list = true,
+  inspect = true,
+}
+
+local function _choose_completion_permission(params)
+  params = params or {}
+  local tool_call = params and params.toolCall or {}
+  local kind = tostring(tool_call.kind or params.kind or ""):lower()
+  if not COMPLETION_SAFE_TOOL_KINDS[kind] then
+    return nil
+  end
   for _, kind in ipairs({ "allow_once", "allow_always" }) do
-    for _, opt in ipairs(options or {}) do
+    for _, opt in ipairs(params.options or {}) do
       if opt.kind == kind then
         return opt.optionId
       end
@@ -532,8 +574,8 @@ local function _completion_prompt(request)
   }, "\n")
 end
 
----Stream an inline completion. Auto-approves any permission prompts on the
----underlying session so the ghost-text UX stays silent.
+---Stream an inline completion. Completion sessions are read-only: they do not
+---expose host fs and only select harmless read-style permission options.
 ---@param provider { command: string, args?: string[], auth_method?: string, name?: string }
 ---@param request { prefix: string, suffix: string, language?: string, filepath?: string, model?: string }
 ---@param on_chunk fun(text: string)
@@ -541,28 +583,58 @@ end
 ---@return fun() abort
 function M.stream_completion(provider, request, on_chunk, on_done)
   local active = true
+  local done = false
   local session_id = nil
   local client_ref = nil
+  local pending_requests = {}
+
+  local function track_request(id)
+    if id then
+      pending_requests[id] = true
+    end
+    return id
+  end
+
+  local function untrack_request(id)
+    pending_requests[id] = nil
+  end
+
+  local function forget_pending_requests()
+    if client_ref then
+      for id in pairs(pending_requests) do
+        client_ref:forget_request(id)
+      end
+    end
+    pending_requests = {}
+  end
 
   local function finish(err)
-    if not active then
+    if done then
       return
     end
+    done = true
     active = false
     if session_id and client_ref then
       client_ref:unsubscribe(session_id)
     end
+    pending_requests = {}
     vim.schedule(function()
       on_done(err)
     end)
   end
 
-  _get_completion_client(provider, function(client)
+  _get_completion_client(provider, function(client, ready_err)
     if not active then
       return
     end
+    if ready_err or not client then
+      finish(ready_err or { message = "completion client unavailable" })
+      return
+    end
     client_ref = client
-    client:new_session(vim.fn.getcwd(), function(result, err)
+    local new_session_request_id
+    new_session_request_id = track_request(client:new_session(request.cwd or vim.fn.getcwd(), function(result, err)
+      untrack_request(new_session_request_id)
       if not active then
         return
       end
@@ -590,36 +662,47 @@ function M.stream_completion(provider, request, on_chunk, on_done)
           end
         end,
         on_request_permission = function(params, respond)
-          respond(_choose_allow(params and params.options) or "")
+          respond(_choose_completion_permission(params) or "")
         end,
       })
 
       local function send_prompt()
-        client:prompt(session_id, {
+        local prompt_request_id
+        prompt_request_id = track_request(client:prompt(session_id, {
           { type = "text", text = _completion_prompt(request) },
         }, function(_, prompt_err)
+          untrack_request(prompt_request_id)
           finish(prompt_err)
-        end)
+        end))
       end
 
       if request.model and request.model ~= "" then
-        client:set_model(session_id, request.model, function()
+        local model_request_id
+        model_request_id = track_request(client:set_model(session_id, request.model, function(_, model_err)
+          untrack_request(model_request_id)
+          if model_err then
+            finish(model_err)
+            return
+          end
           send_prompt()
-        end)
+        end))
       else
         send_prompt()
       end
-    end)
+    end))
   end)
 
   return function()
-    if not active then
+    if done or not active then
       return
     end
+    done = true
+    active = false
     if session_id and client_ref then
       client_ref:cancel(session_id)
+      client_ref:unsubscribe(session_id)
     end
-    active = false
+    forget_pending_requests()
   end
 end
 

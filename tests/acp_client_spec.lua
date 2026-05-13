@@ -46,6 +46,42 @@ local function decode_last(state)
   return vim.json.decode(last)
 end
 
+local function decode_at(state, index)
+  return vim.json.decode(state.sent[index])
+end
+
+local function wait_for_method(state, method, start_at)
+  local found
+  vim.wait(1000, function()
+    for i = start_at or 1, #state.sent do
+      local msg = decode_at(state, i)
+      if msg.method == method then
+        found = { index = i, msg = msg }
+        return true
+      end
+    end
+    return false
+  end)
+  assert.is_truthy(found, "method not sent: " .. method)
+  return found.index, found.msg
+end
+
+local function respond_result(state, msg, result)
+  state.callbacks.on_message({
+    jsonrpc = "2.0",
+    id = msg.id,
+    result = result or {},
+  })
+end
+
+local function respond_error(state, msg, code, message)
+  state.callbacks.on_message({
+    jsonrpc = "2.0",
+    id = msg.id,
+    error = { code = code or -32603, message = message or "boom" },
+  })
+end
+
 ---Reply to whichever request is currently pending the initialize handshake
 ---so subsequent requests aren't cascaded into a transport-error failure.
 local function ack_initialize(state)
@@ -207,7 +243,7 @@ describe("acp_client", function()
         ready_listener_called = true
       end)
       -- Reject the first two initialize attempts; succeed on the third.
-      local function respond_error(idx)
+      local function respond_initialize_error(idx)
         local raw = state.sent[idx]
         if not raw then
           return false
@@ -220,11 +256,11 @@ describe("acp_client", function()
         })
         return true
       end
-      respond_error(1)
+      respond_initialize_error(1)
       vim.wait(400, function()
         return state.sent[2] ~= nil
       end)
-      respond_error(2)
+      respond_initialize_error(2)
       vim.wait(800, function()
         return state.sent[3] ~= nil
       end)
@@ -240,6 +276,186 @@ describe("acp_client", function()
       end)
       assert.is_true(ready_listener_called)
       assert.is_true(client:is_ready())
+    end)
+  end)
+
+  it("streams completion through authenticate, session/new, model, and prompt", function()
+    config.current.request_timeout_ms = 0
+    config.current.initialize_retries = 1
+    with_fake_transport(function(state)
+      local M = reload_client()
+      local chunks = {}
+      local done
+
+      M.stream_completion({
+        name = "fake",
+        command = "fake-acp",
+        auth_method = "chatgpt",
+      }, {
+        cwd = "/tmp/project",
+        filepath = "/tmp/project/a.lua",
+        language = "lua",
+        prefix = "local value = ",
+        suffix = "",
+        model = "model-a",
+      }, function(chunk)
+        chunks[#chunks + 1] = chunk
+      end, function(err)
+        done = { err = err }
+      end)
+
+      local init_i, init = wait_for_method(state, "initialize")
+      respond_result(state, init, { protocolVersion = 1, agentInfo = { name = "fake" } })
+
+      local auth_i, auth = wait_for_method(state, "authenticate", init_i + 1)
+      assert.are.same({ methodId = "chatgpt" }, auth.params)
+      respond_result(state, auth)
+
+      local session_i, session = wait_for_method(state, "session/new", auth_i + 1)
+      assert.are.equal("/tmp/project", session.params.cwd)
+      respond_result(state, session, { sessionId = "sess-1" })
+
+      local model_i, model = wait_for_method(state, "session/set_model", session_i + 1)
+      assert.are.equal("model-a", model.params.modelId)
+      respond_result(state, model)
+
+      local _, prompt = wait_for_method(state, "session/prompt", model_i + 1)
+      assert.are.equal("sess-1", prompt.params.sessionId)
+      assert.is_truthy(prompt.params.prompt[1].text:find("local value = ", 1, true))
+
+      state.callbacks.on_message({
+        jsonrpc = "2.0",
+        method = "session/update",
+        params = {
+          sessionId = "sess-1",
+          update = {
+            sessionUpdate = "agent_message_chunk",
+            content = { type = "text", text = "42" },
+          },
+        },
+      })
+      vim.wait(50, function()
+        return chunks[1] ~= nil
+      end)
+      assert.are.same({ "42" }, chunks)
+
+      respond_result(state, prompt, { stopReason = "end_turn" })
+      vim.wait(50, function()
+        return done ~= nil
+      end)
+      assert.is_truthy(done)
+      assert.is_nil(done.err)
+    end)
+  end)
+
+  it("reports completion authentication failures", function()
+    config.current.request_timeout_ms = 0
+    config.current.initialize_retries = 1
+    with_fake_transport(function(state)
+      local M = reload_client()
+      local done
+
+      M.stream_completion({ name = "fake", command = "fake-acp", auth_method = "chatgpt" }, {
+        prefix = "",
+        suffix = "",
+      }, function() end, function(err)
+        done = { err = err }
+      end)
+
+      local init_i, init = wait_for_method(state, "initialize")
+      respond_result(state, init, { protocolVersion = 1, agentInfo = { name = "fake" } })
+      local _, auth = wait_for_method(state, "authenticate", init_i + 1)
+      respond_error(state, auth, -32000, "auth failed")
+
+      vim.wait(50, function()
+        return done ~= nil
+      end)
+      assert.is_truthy(done)
+      assert.are.equal("auth failed", done.err.message)
+    end)
+  end)
+
+  it("cancels unsafe completion permission requests", function()
+    config.current.request_timeout_ms = 0
+    config.current.initialize_retries = 1
+    with_fake_transport(function(state)
+      local M = reload_client()
+
+      M.stream_completion({ name = "fake", command = "fake-acp" }, {
+        prefix = "",
+        suffix = "",
+      }, function() end, function() end)
+
+      local init_i, init = wait_for_method(state, "initialize")
+      respond_result(state, init, { protocolVersion = 1, agentInfo = { name = "fake" } })
+      local session_i, session = wait_for_method(state, "session/new", init_i + 1)
+      respond_result(state, session, { sessionId = "sess-1" })
+      wait_for_method(state, "session/prompt", session_i + 1)
+
+      state.callbacks.on_message({
+        jsonrpc = "2.0",
+        id = 99,
+        method = "session/request_permission",
+        params = {
+          sessionId = "sess-1",
+          toolCall = { toolCallId = "tool-1", kind = "edit" },
+          options = { { kind = "allow_once", optionId = "allow-1" } },
+        },
+      })
+      local response
+      vim.wait(50, function()
+        response = decode_last(state)
+        return response.id == 99
+      end)
+      assert.are.equal(99, response.id)
+      assert.are.same({ outcome = { outcome = "cancelled" } }, response.result)
+    end)
+  end)
+
+  it("aborts completion by cancelling the session, dropping pending prompt, and ignoring late chunks", function()
+    config.current.request_timeout_ms = 0
+    config.current.initialize_retries = 1
+    with_fake_transport(function(state)
+      local M = reload_client()
+      local chunks = {}
+      local done
+
+      local abort = M.stream_completion({ name = "fake", command = "fake-acp" }, {
+        prefix = "",
+        suffix = "",
+      }, function(chunk)
+        chunks[#chunks + 1] = chunk
+      end, function(err)
+        done = { err = err }
+      end)
+
+      local init_i, init = wait_for_method(state, "initialize")
+      respond_result(state, init, { protocolVersion = 1, agentInfo = { name = "fake" } })
+      local session_i, session = wait_for_method(state, "session/new", init_i + 1)
+      respond_result(state, session, { sessionId = "sess-1" })
+      local _, prompt = wait_for_method(state, "session/prompt", session_i + 1)
+
+      abort()
+      local cancel = decode_last(state)
+      assert.are.equal("session/cancel", cancel.method)
+      assert.are.equal("sess-1", cancel.params.sessionId)
+
+      state.callbacks.on_message({
+        jsonrpc = "2.0",
+        method = "session/update",
+        params = {
+          sessionId = "sess-1",
+          update = {
+            sessionUpdate = "agent_message_chunk",
+            content = { type = "text", text = "late" },
+          },
+        },
+      })
+      respond_result(state, prompt, { stopReason = "end_turn" })
+      vim.wait(50)
+
+      assert.are.same({}, chunks)
+      assert.is_nil(done)
     end)
   end)
 end)

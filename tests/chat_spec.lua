@@ -979,6 +979,7 @@ describe("chat widget rendering", function()
     end
     assert.is_truthy(footer)
     assert.are.equal("Working", footer[1][2][1])
+    assert.are.same({ { "", nil } }, footer[2])
 
     widget:close()
     vim.cmd("tabclose")
@@ -1103,6 +1104,8 @@ describe("chat widget rendering", function()
     widget:open()
 
     assert.are.equal("", vim.wo[widget.input_win].winbar)
+    assert.is_nil(vim.wo[widget.transcript_win].statusline:find("0x0 Chat", 1, true))
+    assert.is_truthy(vim.wo[widget.transcript_win].statusline:find("repeat('─', winwidth(0))", 1, true))
     assert.are.equal("", vim.bo[widget.input_buf].complete)
     assert.is_false(has_buf_map(widget.input_buf, "i", "<C-N>"))
     assert.is_false(has_buf_map(widget.input_buf, "i", "<C-P>"))

@@ -6,6 +6,7 @@ local M = {}
 ---@field args? string[]
 ---@field env? table<string, string>
 ---@field models? string[]
+---@field auth_method? string
 ---@field ignore_stderr_patterns? string[]  Lua patterns; matching stderr lines are silenced
 
 ---@class zxz.Config
@@ -143,6 +144,7 @@ M.defaults = {
   tool_output_max_lines = 200,
   complete = {
     enabled = true,
+    provider = "codex-acp",
     model = nil,
     debounce_ms = 150,
     max_tokens = 128,
@@ -170,12 +172,6 @@ M.defaults = {
       enabled = false,
       path = nil,
     },
-    acp = {
-      provider = "codex-acp",
-      command = "codex-acp",
-      args = { "-c", "notify=[]" },
-      auth_method = "chatgpt",
-    },
   },
   providers = {
     ["claude-acp"] = {
@@ -199,6 +195,8 @@ M.defaults = {
     ["codex-acp"] = {
       name = "Codex ACP",
       command = "codex-acp",
+      args = { "-c", "notify=[]" },
+      auth_method = "chatgpt",
       models = { "gpt-5-codex", "gpt-5", "o3" },
     },
     ["gemini-acp"] = {
@@ -231,6 +229,29 @@ function M.resolve_provider(name)
     return nil, "unknown provider: " .. tostring(name)
   end
   return provider, nil
+end
+
+---@return zxz.ProviderConfig|nil, string|nil
+function M.resolve_completion_provider()
+  local complete = M.current.complete or {}
+  local override = complete.acp
+  if type(override) == "table" and override.command and override.command ~= "" then
+    local provider = vim.deepcopy(override)
+    provider.name = provider.name or provider.provider or "completion"
+    return provider, nil
+  end
+
+  local provider_name = complete.provider
+  if (not provider_name or provider_name == "") and type(override) == "table" then
+    provider_name = override.provider
+  end
+  provider_name = provider_name or M.current.provider
+
+  local provider, err = M.resolve_provider(provider_name)
+  if not provider then
+    return nil, err
+  end
+  return vim.deepcopy(provider), nil
 end
 
 return M
