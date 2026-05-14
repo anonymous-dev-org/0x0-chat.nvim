@@ -1297,20 +1297,9 @@ describe("chat widget rendering", function()
     assert.is_nil(input_winbar:find("Working", 1, true))
     assert.is_nil(transcript_winbar:find("Working", 1, true))
 
-    local namespaces = vim.api.nvim_get_namespaces()
-    local marks = vim.api.nvim_buf_get_extmarks(widget.transcript_buf, namespaces.zxz_chat_widget, 0, -1, {
-      details = true,
-    })
-    local footer = nil
-    for _, mark in ipairs(marks) do
-      local details = mark[4]
-      if details and details.virt_lines then
-        footer = details.virt_lines
-      end
-    end
-    assert.is_truthy(footer)
-    assert.are.equal("Working", footer[1][2][1])
-    assert.are.same({ { "", nil } }, footer[2])
+    local lines = vim.api.nvim_buf_get_lines(widget.transcript_buf, 0, -1, false)
+    assert.are.equal("⠋ Working", lines[#lines - 1])
+    assert.are.equal("", lines[#lines])
 
     widget:close()
     vim.cmd("tabclose")
@@ -1346,22 +1335,8 @@ describe("chat widget rendering", function()
     end
     widget:set_activity("waiting", "Working")
 
-    local namespaces = vim.api.nvim_get_namespaces()
-    local marks = vim.api.nvim_buf_get_extmarks(widget.transcript_buf, namespaces.zxz_chat_widget, 0, -1, {
-      details = true,
-    })
-    local footer = nil
-    for _, mark in ipairs(marks) do
-      local details = mark[4]
-      if details and details.virt_lines then
-        footer = details.virt_lines[1]
-      end
-    end
-    assert.is_truthy(footer)
-    local text = ""
-    for _, chunk in ipairs(footer) do
-      text = text .. chunk[1]
-    end
+    local lines = vim.api.nvim_buf_get_lines(widget.transcript_buf, 0, -1, false)
+    local text = lines[#lines - 1]
     assert.is_truthy(text:find("tool: edit rewrite parser", 1, true))
     assert.is_truthy(text:find("files: a.txt, nested/b.txt +1", 1, true))
     assert.is_truthy(text:find("review: 3", 1, true))
@@ -1402,24 +1377,54 @@ describe("chat widget rendering", function()
     vim.api.nvim_win_set_width(widget.transcript_win, 42)
     widget:set_activity("waiting", "Working")
 
-    local namespaces = vim.api.nvim_get_namespaces()
-    local marks = vim.api.nvim_buf_get_extmarks(widget.transcript_buf, namespaces.zxz_chat_widget, 0, -1, {
-      details = true,
-    })
-    local footer = nil
-    for _, mark in ipairs(marks) do
-      local details = mark[4]
-      if details and details.virt_lines then
-        footer = details.virt_lines[1]
-      end
-    end
-    assert.is_truthy(footer)
-    local text = ""
-    for _, chunk in ipairs(footer) do
-      text = text .. chunk[1]
-    end
+    local lines = vim.api.nvim_buf_get_lines(widget.transcript_buf, 0, -1, false)
+    local text = lines[#lines - 1]
     assert.is_true(vim.fn.strdisplaywidth(text) <= vim.api.nvim_win_get_width(widget.transcript_win) - 2)
     assert.is_truthy(text:find("...", 1, true))
+
+    widget:close()
+    vim.cmd("tabclose")
+  end)
+
+  it("scrolls wrapped transcript history to the final visual row above the input", function()
+    local History = require("zxz.core.history")
+    local ChatWidget = require("zxz.chat.widget")
+    local history = History.new()
+    vim.cmd("tabnew")
+    local widget = ChatWidget.new(vim.api.nvim_get_current_tabpage(), history, function() end, function() end)
+
+    widget:open()
+    vim.api.nvim_win_set_width(widget.transcript_win, 24)
+    history:add_agent_chunk("agent", string.rep("wrapped ", 24))
+    widget:render()
+
+    local last = vim.api.nvim_buf_line_count(widget.transcript_buf)
+    local last_line = vim.api.nvim_buf_get_lines(widget.transcript_buf, last - 1, last, false)[1]
+    assert.are.same({ last, math.max(#last_line - 1, 0) }, vim.api.nvim_win_get_cursor(widget.transcript_win))
+    assert.is_true(vim.api.nvim_win_get_height(widget.transcript_win) > 0)
+
+    widget:close()
+    vim.cmd("tabclose")
+  end)
+
+  it("tails through the transient activity footer while chunks stream", function()
+    local History = require("zxz.core.history")
+    local ChatWidget = require("zxz.chat.widget")
+    local history = History.new()
+    vim.cmd("tabnew")
+    local widget = ChatWidget.new(vim.api.nvim_get_current_tabpage(), history, function() end, function() end)
+
+    widget:open()
+    widget:set_activity("waiting", "Working")
+    history:add_agent_chunk("agent", string.rep("first ", 16))
+    widget:render()
+    history:add_agent_chunk("agent", string.rep("second ", 16))
+    widget:render()
+
+    local lines = vim.api.nvim_buf_get_lines(widget.transcript_buf, 0, -1, false)
+    assert.are.equal("⠋ Working", lines[#lines - 1])
+    assert.are.equal("", lines[#lines])
+    assert.are.same({ #lines, 0 }, vim.api.nvim_win_get_cursor(widget.transcript_win))
 
     widget:close()
     vim.cmd("tabclose")

@@ -67,6 +67,7 @@ local KEY_TO_KIND = {
 ---@field activity_state string|nil
 ---@field activity_label string|nil
 ---@field activity_extmark integer|nil
+---@field activity_footer_start integer|nil
 ---@field activity_frame integer
 ---@field activity_timer uv_timer_t|nil
 ---@field work_state_provider (fun(): table|nil)|nil
@@ -103,6 +104,7 @@ function ChatWidget.new(tab_page_id, history, on_submit, on_cancel, work_state_p
     activity_state = nil,
     activity_label = nil,
     activity_extmark = nil,
+    activity_footer_start = nil,
     activity_frame = 1,
     activity_timer = nil,
     work_state_provider = work_state_provider,
@@ -829,6 +831,7 @@ function ChatWidget:reset()
     vim.bo[self.transcript_buf].modifiable = false
   end
   self:clear_input()
+  self.activity_footer_start = nil
   self.rendered_count = 0
   self.tool_extmarks = {}
   self.user_extmarks = {}
@@ -850,6 +853,7 @@ function ChatWidget:rerender_all(opts)
     api.nvim_buf_clear_namespace(self.transcript_buf, NS, 0, -1)
     vim.bo[self.transcript_buf].modifiable = false
   end
+  self.activity_footer_start = nil
   self.rendered_count = 0
   self.tool_extmarks = {}
   self.user_extmarks = {}
@@ -894,16 +898,36 @@ function ChatWidget:_ensure_activity_timer()
   end)
 end
 
+function ChatWidget:_clear_activity_footer()
+  local bufnr = self.transcript_buf
+  local start = self.activity_footer_start
+  self.activity_footer_start = nil
+  self.activity_extmark = nil
+  if not buf_valid(bufnr) or not start then
+    return
+  end
+  local line_count = api.nvim_buf_line_count(bufnr)
+  if start >= line_count then
+    return
+  end
+  local was_modifiable = vim.bo[bufnr].modifiable
+  if not was_modifiable then
+    vim.bo[bufnr].modifiable = true
+  end
+  api.nvim_buf_clear_namespace(bufnr, NS, start, line_count)
+  api.nvim_buf_set_lines(bufnr, start, line_count, false, {})
+  if not was_modifiable then
+    vim.bo[bufnr].modifiable = false
+  end
+end
+
 function ChatWidget:_render_activity()
   local bufnr = self.transcript_buf
   if not buf_valid(bufnr) then
     return
   end
 
-  if self.activity_extmark then
-    pcall(api.nvim_buf_del_extmark, bufnr, NS, self.activity_extmark)
-    self.activity_extmark = nil
-  end
+  self:_clear_activity_footer()
   if not self.activity_state then
     return
   end
@@ -911,11 +935,18 @@ function ChatWidget:_render_activity()
   local spinner = ACTIVITY_SPINNER[self.activity_frame] or ACTIVITY_SPINNER[1]
   local label = self.activity_label or ACTIVITY_LABELS[self.activity_state] or "Working"
   local hl = STATE_HL[self.activity_state] or "Comment"
-  local last_line = math.max(api.nvim_buf_line_count(bufnr) - 1, 0)
-  self.activity_extmark = api.nvim_buf_set_extmark(bufnr, NS, last_line, 0, {
-    virt_lines = { self:_activity_chunks(spinner, hl, label), { { "", nil } } },
-    virt_lines_above = false,
-  })
+  local line = Line:new(self:_activity_chunks(spinner, hl, label))
+  local was_modifiable = vim.bo[bufnr].modifiable
+  if not was_modifiable then
+    vim.bo[bufnr].modifiable = true
+  end
+  local start = api.nvim_buf_line_count(bufnr)
+  api.nvim_buf_set_lines(bufnr, start, start, false, { tostring(line), "" })
+  line:set_highlights(NS, bufnr, start)
+  if not was_modifiable then
+    vim.bo[bufnr].modifiable = false
+  end
+  self.activity_footer_start = start
 end
 
 ---@param files string[]|nil
@@ -1353,7 +1384,11 @@ function ChatWidget:_scroll_to_end()
     return
   end
   local last = api.nvim_buf_line_count(self.transcript_buf)
-  pcall(api.nvim_win_set_cursor, win, { last, 0 })
+  local line = api.nvim_buf_get_lines(self.transcript_buf, last - 1, last, false)[1] or ""
+  pcall(api.nvim_win_set_cursor, win, { last, math.max(#line - 1, 0) })
+  pcall(api.nvim_win_call, win, function()
+    vim.cmd("normal! zb")
+  end)
 end
 
 local AGENT_HEADERS = {
@@ -1479,6 +1514,7 @@ function ChatWidget:render()
     end
   end
   vim.bo[bufnr].modifiable = true
+  self:_clear_activity_footer()
 
   -- Patch in-place: tool_call updates and permission decisions on already-rendered messages.
   for i = 1, math.min(self.rendered_count, #messages) do
