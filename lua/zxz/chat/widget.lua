@@ -186,6 +186,14 @@ local function sanitize_input_buffer(bufnr)
   end
 
   local lines = api.nvim_buf_get_lines(bufnr, 0, -1, false)
+  local original_lines = vim.deepcopy(lines)
+  local cursors = {}
+  for _, win in ipairs(api.nvim_list_wins()) do
+    if api.nvim_win_is_valid(win) and api.nvim_win_get_buf(win) == bufnr then
+      cursors[win] = api.nvim_win_get_cursor(win)
+    end
+  end
+
   local changed = false
   for i, line in ipairs(lines) do
     local clean = strip_input_controls(line)
@@ -200,6 +208,17 @@ local function sanitize_input_buffer(bufnr)
 
   vim.b[bufnr].zxz_chat_sanitizing = true
   api.nvim_buf_set_lines(bufnr, 0, -1, false, lines)
+  local line_count = api.nvim_buf_line_count(bufnr)
+  for win, cursor in pairs(cursors) do
+    if api.nvim_win_is_valid(win) and api.nvim_win_get_buf(win) == bufnr then
+      local row = math.min(cursor[1], line_count)
+      local original = original_lines[row] or ""
+      local before_cursor = original:sub(1, cursor[2])
+      local removed_before_cursor = #before_cursor - #strip_input_controls(before_cursor)
+      local col = math.max(0, math.min(cursor[2] - removed_before_cursor, #lines[row]))
+      pcall(api.nvim_win_set_cursor, win, { row, col })
+    end
+  end
   vim.b[bufnr].zxz_chat_sanitizing = false
 end
 

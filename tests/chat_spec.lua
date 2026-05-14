@@ -1481,4 +1481,31 @@ describe("chat widget rendering", function()
     widget:close()
     vim.cmd("tabclose")
   end)
+
+  it("keeps the cursor stable when sanitizing leaked controls mid-sentence", function()
+    local History = require("zxz.core.history")
+    local ChatWidget = require("zxz.chat.widget")
+    local history = History.new()
+    vim.cmd("tabnew")
+    local widget = ChatWidget.new(vim.api.nvim_get_current_tabpage(), history, function() end, function() end)
+    widget:open()
+
+    vim.api.nvim_buf_set_lines(widget.input_buf, 0, -1, false, { "Hello world" })
+    vim.api.nvim_win_set_cursor(widget.input_win, { 1, 6 })
+    vim.api.nvim_feedkeys(
+      vim.api.nvim_replace_termcodes("ib<C-v><C-n>i<C-v><C-n>g<C-v><C-n> <C-v><C-n>", true, false, true),
+      "xt",
+      false
+    )
+    vim.wait(100, function()
+      return vim.api.nvim_buf_get_lines(widget.input_buf, 0, -1, false)[1] == "Hello big world"
+    end)
+
+    local lines = vim.api.nvim_buf_get_lines(widget.input_buf, 0, -1, false)
+    assert.are.equal("Hello big world", lines[1])
+    assert.are.same({ 1, 10 }, vim.api.nvim_win_get_cursor(widget.input_win))
+
+    widget:close()
+    vim.cmd("tabclose")
+  end)
 end)
