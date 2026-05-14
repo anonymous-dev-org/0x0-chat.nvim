@@ -81,6 +81,34 @@ describe("chat orchestrator", function()
     assert.is_true(ok, tostring(err))
   end)
 
+  it("leaves mini.starter before opening chat pickers", function()
+    assert.is_truthy(current_chat())
+    local order = {}
+    local original_select = vim.ui.select
+    local original_starter = _G.MiniStarter
+    local original_filetype = vim.bo.filetype
+
+    vim.bo.filetype = "ministarter"
+    _G.MiniStarter = {
+      close = function()
+        order[#order + 1] = "close"
+      end,
+    }
+    vim.ui.select = function(_, _, on_choice)
+      order[#order + 1] = "select"
+      on_choice(nil)
+    end
+
+    local ok, err = pcall(M.chats_picker)
+
+    vim.ui.select = original_select
+    _G.MiniStarter = original_starter
+    vim.bo.filetype = original_filetype
+
+    assert.is_true(ok, tostring(err))
+    assert.are.same({ "close", "select" }, order)
+  end)
+
   it("summarizes the active run for compact work state", function()
     local chat = current_chat()
     assert.is_truthy(chat)

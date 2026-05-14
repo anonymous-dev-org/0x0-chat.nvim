@@ -852,12 +852,26 @@ function M.add_selection(sel)
   for_current_tab():add_selection(sel)
 end
 
+local function leave_ministarter_picker_target()
+  if vim.bo.filetype ~= "ministarter" then
+    return
+  end
+  local starter = rawget(_G, "MiniStarter")
+  if type(starter) == "table" and type(starter.close) == "function" then
+    pcall(starter.close)
+  end
+  if vim.o.cmdheight > 0 then
+    pcall(vim.cmd, "echo ''")
+  end
+end
+
 function M.history_picker()
   local entries = HistoryStore.list()
   if #entries == 0 then
     vim.notify("0x0: no saved chat history", vim.log.levels.INFO)
     return
   end
+  leave_ministarter_picker_target()
   vim.ui.select(entries, {
     prompt = "0x0 chat history",
     format_item = function(e)
@@ -918,6 +932,7 @@ function M.chats_picker()
     end
     return (a.updated_at or 0) > (b.updated_at or 0)
   end)
+  leave_ministarter_picker_target()
   vim.ui.select(items, {
     prompt = "0x0 chats",
     format_item = function(e)
@@ -969,6 +984,7 @@ function M.runs_picker(current_thread_only)
     vim.notify("0x0: no AI tasks recorded", vim.log.levels.INFO)
     return
   end
+  leave_ministarter_picker_target()
   vim.ui.select(runs, {
     prompt = current_thread_only and "0x0 tasks in this chat" or "0x0 tasks",
     format_item = function(run)

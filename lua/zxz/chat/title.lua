@@ -11,20 +11,21 @@ local function configured_title_model(provider_name)
   return title_model
 end
 
-local function model_option_has_value(options, value)
+local function model_option_state(options, value)
   if not options or not value or value == "" then
-    return false
+    return false, false
   end
   for _, option in ipairs(options) do
     if option.category == "model" and option.options then
       for _, item in ipairs(option.options) do
         if item.value == value then
-          return true
+          return true, true
         end
       end
+      return true, false
     end
   end
-  return false
+  return false, false
 end
 
 local function clean_title(text)
@@ -110,7 +111,8 @@ function M.generate(provider_name, cwd, first_prompt, callback)
       end
 
       if model and model ~= "" then
-        if model_option_has_value(result.configOptions, model) then
+        local has_model_option, has_model = model_option_state(result.configOptions, model)
+        if has_model then
           c:set_config_option(session_id, "model", model, function(_, merr)
             if merr then
               stop_client(c, session_id)
@@ -119,7 +121,7 @@ function M.generate(provider_name, cwd, first_prompt, callback)
             end
             prompt_for_title()
           end)
-        else
+        elseif not has_model_option then
           c:set_model(session_id, model, function(_, merr)
             if merr then
               stop_client(c, session_id)
@@ -128,6 +130,8 @@ function M.generate(provider_name, cwd, first_prompt, callback)
             end
             prompt_for_title()
           end)
+        else
+          prompt_for_title()
         end
       else
         prompt_for_title()
