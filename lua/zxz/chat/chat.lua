@@ -3,12 +3,15 @@
 -- surface consumed by lua/zxz/init.lua.
 
 local config = require("zxz.core.config")
+local ChatDB = require("zxz.core.chat_db")
 local History = require("zxz.core.history")
 local HistoryStore = require("zxz.core.history_store")
 local RunsStore = require("zxz.core.runs_store")
+local Events = require("zxz.core.events")
 local ChatWidget = require("zxz.chat.widget")
 local Checkpoint = require("zxz.core.checkpoint")
 local InlineDiff = require("zxz.edit.inline_diff")
+local Runtime = require("zxz.chat.runtime")
 
 local api = vim.api
 
@@ -34,6 +37,7 @@ local api = vim.api
 ---@field title_pending boolean
 ---@field current_run table|nil
 ---@field run_ids string[]
+---@field on_new_chat (fun(source: zxz.Chat)|nil)
 local Chat = {}
 Chat.__index = Chat
 
@@ -136,8 +140,10 @@ local function running_tool(run, active_tool_call_id)
 end
 
 ---@param tab_page_id integer
+---@param opts? { on_new_chat?: fun(source: zxz.Chat) }
 ---@return zxz.Chat
-function Chat.new(tab_page_id)
+function Chat.new(tab_page_id, opts)
+  opts = opts or {}
   local self = setmetatable({
     tab_page_id = tab_page_id,
     client = nil,
@@ -164,6 +170,7 @@ function Chat.new(tab_page_id)
     run_ids = {},
     permission_queue = {},
     pending_trim = {},
+    on_new_chat = opts.on_new_chat,
   }, Chat)
   self.widget = ChatWidget.new(tab_page_id, self.history, function()
     self:submit()
@@ -173,6 +180,71 @@ function Chat.new(tab_page_id)
     return self:_work_state()
   end)
   return self
+end
+
+local function last_run(chat)
+  local ids = chat.run_ids or {}
+  for index = #ids, 1, -1 do
+    local run = RunsStore.load(ids[index])
+    if run then
+      return run
+    end
+  end
+end
+
+local STATUS_META = {
+  request_approval = { label = "request approval", group = "active", order = 10 },
+  approval = { label = "request approval", group = "active", order = 10 },
+  working = { label = "working", group = "active", order = 20 },
+  failed = { label = "failed", group = "active", order = 30 },
+  queued = { label = "queued", group = "queued", order = 40 },
+  needs_input = { label = "needs input", group = "open", order = 50 },
+  saved = { label = "saved", group = "history", order = 60 },
+}
+
+---@return { key: string, label: string, group: string, order: integer }
+function Chat:status_snapshot()
+  local key
+  if self.widget and self.widget.permission_pending then
+    key = "request_approval"
+  elseif self.permission_queue and #self.permission_queue > 0 then
+    key = "request_approval"
+  elseif self.in_flight then
+    key = "working"
+  elseif self.queued_prompts and #self.queued_prompts > 0 then
+    key = "queued"
+  else
+    local run = last_run(self)
+    key = run and run.status == "failed" and "failed" or "needs_input"
+  end
+  local meta = STATUS_META[key] or STATUS_META.needs_input
+  return {
+    key = key,
+    label = meta.label,
+    group = meta.group,
+    order = meta.order,
+  }
+end
+
+---@return table
+function Chat:summary_entry()
+  local status = self:status_snapshot()
+  return {
+    id = self.persist_id,
+    title = self.title or "untitled",
+    updated_at = os.time(),
+    created_at = self.persist_created_at or 0,
+    message_count = self.history and #(self.history.messages or {}) or 0,
+    status = status.key,
+    status_label = status.label,
+    group_label = status.group,
+    status_order = status.order,
+    live = true,
+    chat = self,
+    provider = self.provider_name,
+    model = self.model,
+    mode = self.mode,
+  }
 end
 
 ---@return table|nil
@@ -269,6 +341,45 @@ function Chat:_rerender_transcript()
   self:_schedule_persist()
 end
 
+---@param item table|string
+---@return string
+function Chat:_queue_db_id(item)
+  local message_id = type(item) == "table" and item.id or item
+  return ("%s:%s"):format(self.persist_id, message_id or "")
+end
+
+---@param item table
+---@param index integer
+function Chat:_persist_queue_item(item, index)
+  if not item or not self.persist_id then
+    return
+  end
+  item.queue_id = item.queue_id or self:_queue_db_id(item)
+  ChatDB.save_queue_item({
+    id = item.queue_id,
+    chat_id = self.persist_id,
+    message_id = item.id,
+    seq = index,
+    text = item.text or "",
+    context_records = item.context_records or {},
+    trim = item.trim or {},
+    status = "queued",
+  })
+end
+
+---@param item table
+function Chat:_delete_queue_item(item)
+  if item then
+    ChatDB.delete_queue_item(item.queue_id or self:_queue_db_id(item))
+  end
+end
+
+function Chat:_persist_queue_order()
+  for index, item in ipairs(self.queued_prompts or {}) do
+    self:_persist_queue_item(item, index)
+  end
+end
+
 ---@param token string
 function Chat:add_context_token(token)
   token = type(token) == "string" and vim.trim(token) or ""
@@ -353,6 +464,7 @@ function Chat:queue_update(index, text)
   item.context_records = records
   item.context_summary = summary
   self:_update_queued_history_text(item.id, text, summary, records)
+  self:_persist_queue_item(item, index)
   self:_rerender_transcript()
   return true
 end
@@ -367,6 +479,8 @@ function Chat:queue_remove(index)
     return false, "queued message not found"
   end
   table.remove(self.queued_prompts, index)
+  self:_delete_queue_item(item)
+  self:_persist_queue_order()
   self:_remove_queued_history_message(item.id)
   self:_set_turn_activity(self.widget.activity_state, self.widget.activity_label)
   self:_rerender_transcript()
@@ -376,6 +490,7 @@ end
 function Chat:queue_clear()
   while #self.queued_prompts > 0 do
     local item = table.remove(self.queued_prompts)
+    self:_delete_queue_item(item)
     self:_remove_queued_history_message(item.id)
   end
   self:_set_turn_activity(self.widget.activity_state, self.widget.activity_label)
@@ -416,6 +531,7 @@ function Chat:trim_queued(index)
     item.context_records = records
     item.context_summary = require("zxz.context.reference_mentions").summary_from_records(records)
     self:_update_queued_history_text(item.id, item.text, item.context_summary, records)
+    self:_persist_queue_item(item, index)
     local kept, suppressed = self:_context_trim_counts(records, item.trim)
     vim.notify(("0x0 trim: queued %d has %d kept, %d suppressed"):format(index, kept, suppressed), vim.log.levels.INFO)
     self:_rerender_transcript()
@@ -468,6 +584,8 @@ function Chat:queue_send_next()
   if not item then
     return false, "queue is empty"
   end
+  self:_delete_queue_item(item)
+  self:_persist_queue_order()
   self:_submit_prompt(item.text, item.id, nil, {
     context_records = item.context_records,
     trim = item.trim,
@@ -587,19 +705,101 @@ function Chat:toggle()
   end
 end
 
--- Registry: one Chat per tabpage.
+-- Registry: one visible Chat per tabpage, with any number of live hidden
+-- chats kept running behind it.
 
----@type table<integer, zxz.Chat>
-local instances = {}
+local new_chat_for_tab
+
+local function create_chat(tab)
+  return Chat.new(tab, {
+    on_new_chat = function(source)
+      new_chat_for_tab(source.tab_page_id, source)
+    end,
+  })
+end
+
+local function tab_state(tab)
+  return Runtime.tab_state(tab)
+end
+
+local function attach_to_tab(chat, tab)
+  chat.tab_page_id = tab
+  if chat.widget then
+    chat.widget.tab_page_id = tab
+  end
+end
+
+local function set_active_chat(tab, chat)
+  local state = tab_state(tab)
+  if state.active and state.active ~= chat then
+    pcall(function()
+      state.active:_persist_now()
+    end)
+    state.active:close()
+  end
+  attach_to_tab(chat, tab)
+  Runtime.set_active(tab, chat)
+  if state.unsubscribe then
+    state.unsubscribe()
+  end
+  state.unsubscribe = Events.on("zxz_chat_updated", function(chat_id)
+    if state.active ~= chat or chat_id ~= chat.persist_id then
+      return
+    end
+    vim.schedule(function()
+      if state.active == chat then
+        chat:refresh_from_store()
+      end
+    end)
+  end)
+  chat:open()
+  chat.widget:render()
+end
+
+new_chat_for_tab = function(tab, source)
+  if source then
+    pcall(function()
+      source:_persist_now()
+    end)
+  end
+  local chat = create_chat(tab)
+  if source then
+    chat.provider_name = source.provider_name
+    chat.model = source.model
+    chat.mode = source.mode
+    chat.config_values = vim.deepcopy(source.config_values or {})
+  end
+  set_active_chat(tab, chat)
+  return chat
+end
 
 local function for_current_tab()
   local tab = api.nvim_get_current_tabpage()
-  local chat = instances[tab]
+  local state = tab_state(tab)
+  local chat = state.active
   if not chat then
-    chat = Chat.new(tab)
-    instances[tab] = chat
+    chat = new_chat_for_tab(tab)
   end
   return chat
+end
+
+local function switch_to_thread(id)
+  local tab = api.nvim_get_current_tabpage()
+  local state = tab_state(tab)
+  local live = state.by_id[id]
+  live = live or Runtime.find(id)
+  if live then
+    set_active_chat(tab, live)
+    return
+  end
+  local previous = state.active
+  local chat = create_chat(tab)
+  chat:load_thread(id, { hidden = true })
+  Runtime.register(chat, tab)
+  if previous and previous ~= chat then
+    Runtime.register(previous, tab)
+  end
+  set_active_chat(tab, chat)
 end
 
 local augroup = api.nvim_create_augroup("zxz_chat", { clear = true })
@@ -611,17 +811,24 @@ api.nvim_create_autocmd("TabClosed", {
     if not tab then
       return
     end
-    local chat = instances[tab]
-    if chat then
-      pcall(function()
-        chat:_persist_now()
-      end)
-      local root = chat.repo_root
-      chat:stop()
-      if root then
+    local state = Runtime.detach_tab(tab)
+    if state then
+      if state.unsubscribe then
+        state.unsubscribe()
+      end
+      local roots = {}
+      for _, chat in pairs(state.by_id or {}) do
+        if chat.repo_root then
+          roots[chat.repo_root] = true
+        end
+        chat:stop()
+        pcall(function()
+          chat:_persist_now()
+        end)
+      end
+      for root in pairs(roots) do
         pcall(Checkpoint.gc, root, config.current.checkpoint_keep_n or 20)
       end
-      instances[tab] = nil
     end
   end,
 })
@@ -661,14 +868,83 @@ function M.history_picker()
     if not choice then
       return
     end
-    for_current_tab():load_thread(choice.id)
+    switch_to_thread(choice.id)
   end)
 end
 
-M.chats_picker = M.history_picker
+local function saved_status(entry)
+  local status = entry.status or "saved"
+  local meta = STATUS_META[status] or STATUS_META.saved
+  return status, meta.label, meta.group, meta.order
+end
+
+local function chat_agent_label(entry)
+  local model = entry.model or entry.provider
+  if model and model ~= "" then
+    return model
+  end
+  return "-"
+end
+
+function M.chats_picker()
+  local tab = api.nvim_get_current_tabpage()
+  local state = tab_state(tab)
+  local items = {}
+  local seen = {}
+  for _, chat in ipairs(Runtime.list_for_tab(tab)) do
+    local entry = chat:summary_entry()
+    entry.current = state.active == chat
+    items[#items + 1] = entry
+    seen[entry.id] = true
+  end
+  for _, entry in ipairs(HistoryStore.list()) do
+    if not seen[entry.id] then
+      local status, label, group, order = saved_status(entry)
+      entry.status = status
+      entry.status_label = label
+      entry.group_label = group
+      entry.status_order = order
+      entry.live = false
+      items[#items + 1] = entry
+    end
+  end
+  if #items == 0 then
+    vim.notify("0x0: no chats", vim.log.levels.INFO)
+    return
+  end
+  table.sort(items, function(a, b)
+    if (a.status_order or 99) ~= (b.status_order or 99) then
+      return (a.status_order or 99) < (b.status_order or 99)
+    end
+    return (a.updated_at or 0) > (b.updated_at or 0)
+  end)
+  vim.ui.select(items, {
+    prompt = "0x0 chats",
+    format_item = function(e)
+      local current = e.current and "* " or "  "
+      local scope = e.live and "live" or "saved"
+      local when = e.updated_at and e.updated_at > 0 and os.date("%Y-%m-%d %H:%M", e.updated_at) or "---- -- -- --:--"
+      return ("%s%-7s  %-16s  %-5s  %-16s  %s  %s  (%d msgs)"):format(
+        current,
+        e.group_label or "open",
+        e.status_label or "saved",
+        scope,
+        chat_agent_label(e),
+        when,
+        e.title or "untitled",
+        e.message_count or 0
+      )
+    end,
+  }, function(choice)
+    if choice then
+      switch_to_thread(choice.id)
+    end
+  end)
+end
 
 function M.new()
-  for_current_tab():new_session()
+  local tab = api.nvim_get_current_tabpage()
+  new_chat_for_tab(tab, Runtime.active(tab))
 end
 
 local STATUS_ICON = {
@@ -728,12 +1004,14 @@ end
 M.tasks_picker = M.runs_picker
 
 function M.submit()
-  for_current_tab():submit()
+  local chat = for_current_tab()
+  Runtime.submit(chat.persist_id)
 end
 
 ---@param prompt string
 function M.run_headless(prompt)
-  for_current_tab():submit_prompt(prompt, { headless = true })
+  local chat = for_current_tab()
+  Runtime.submit_prompt(chat.persist_id, prompt, { headless = true })
 end
 
 ---@param opts { prompt_blocks: table[], on_chunk: fun(text), on_done: fun(err) }
@@ -743,7 +1021,8 @@ function M.run_inline_ask(opts)
 end
 
 function M.cancel()
-  for_current_tab():cancel()
+  local chat = for_current_tab()
+  Runtime.cancel(chat.persist_id)
 end
 
 function M.changes()
@@ -800,7 +1079,8 @@ function M.discard_all()
 end
 
 function M.stop()
-  for_current_tab():stop()
+  local chat = for_current_tab()
+  Runtime.stop(chat.persist_id)
 end
 
 function M.current_settings()

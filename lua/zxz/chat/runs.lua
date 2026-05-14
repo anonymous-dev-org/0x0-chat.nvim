@@ -4,6 +4,7 @@
 -- the chat thread store.
 
 local Checkpoint = require("zxz.core.checkpoint")
+local ChatDB = require("zxz.core.chat_db")
 local EditEvents = require("zxz.core.edit_events")
 local RunsStore = require("zxz.core.runs_store")
 
@@ -72,9 +73,18 @@ function M:_run_append_tool_call(tool_call_id, update)
     kind = update.kind or "tool",
     title = update.title or "",
     status = update.status or "pending",
+    raw_input = update.rawInput,
+    content = update.content,
+    locations = update.locations,
     started_at = os.time(),
     ended_at = nil,
   }
+  ChatDB.save_tool_call(vim.tbl_extend("force", run.tool_calls[#run.tool_calls], {
+    id = ("%s:%s"):format(run.run_id, tool_call_id),
+    chat_id = self.persist_id,
+    run_id = run.run_id,
+  }))
+  RunsStore.save(run)
 end
 
 ---@param tool_call_id string
@@ -98,6 +108,21 @@ function M:_run_update_tool_call(tool_call_id, patch)
       if patch.kind then
         tc.kind = patch.kind
       end
+      if patch.raw_input ~= nil then
+        tc.raw_input = patch.raw_input
+      end
+      if patch.content ~= nil then
+        tc.content = patch.content
+      end
+      if patch.locations ~= nil then
+        tc.locations = patch.locations
+      end
+      ChatDB.save_tool_call(vim.tbl_extend("force", tc, {
+        id = ("%s:%s"):format(run.run_id, tool_call_id),
+        chat_id = self.persist_id,
+        run_id = run.run_id,
+      }))
+      RunsStore.save(run)
       return
     end
   end

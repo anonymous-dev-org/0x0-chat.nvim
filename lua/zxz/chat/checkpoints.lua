@@ -355,6 +355,10 @@ function M:show_changes()
 end
 
 function M:new_session()
+  if self.on_new_chat then
+    self.on_new_chat(self)
+    return
+  end
   self:_persist_now()
   self:_reset_session()
   self.history:clear()

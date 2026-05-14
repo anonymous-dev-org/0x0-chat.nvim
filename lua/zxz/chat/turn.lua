@@ -205,6 +205,9 @@ function M:submit()
       context_records = queue_records,
       context_summary = context_summary,
     })
+    if self._persist_queue_item then
+      self:_persist_queue_item(self.queued_prompts[#self.queued_prompts], #self.queued_prompts)
+    end
     self.pending_trim = {}
     self.widget:clear_input()
     self:_set_turn_activity(self.widget.activity_state or "waiting", self.widget.activity_label or "Working")
@@ -347,6 +350,12 @@ end
 function M:_notify_or_continue()
   local next_prompt = table.remove(self.queued_prompts, 1)
   if next_prompt then
+    if self._delete_queue_item then
+      self:_delete_queue_item(next_prompt)
+    end
+    if self._persist_queue_order then
+      self:_persist_queue_order()
+    end
     self:_submit_prompt(next_prompt.text, next_prompt.id, nil, {
       context_records = next_prompt.context_records,
       trim = next_prompt.trim,
@@ -402,6 +411,9 @@ function M:submit_prompt(prompt, opts)
       context_records = queue_records,
       context_summary = context_summary,
     })
+    if self._persist_queue_item then
+      self:_persist_queue_item(self.queued_prompts[#self.queued_prompts], #self.queued_prompts)
+    end
     self.pending_trim = {}
     return
   end

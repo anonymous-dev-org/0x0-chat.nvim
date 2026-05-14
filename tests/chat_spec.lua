@@ -7,14 +7,30 @@ local helpers = require("tests.helpers")
 describe("chat orchestrator", function()
   local M
   local repo
+  local state_tmp
+
+  local function current_chat()
+    for i = 1, 10 do
+      local name, value = debug.getupvalue(M.queue_state, i)
+      if name == "for_current_tab" then
+        return value()
+      end
+    end
+  end
 
   before_each(function()
     repo = vim.loop.fs_realpath(helpers.make_repo({ ["a.txt"] = "alpha\n" }))
+    state_tmp = vim.fn.tempname()
+    vim.fn.mkdir(state_tmp, "p")
+    vim.env.XDG_STATE_HOME = state_tmp
+    require("zxz.chat.runtime")._reset_for_tests()
     M = require("zxz.chat.chat")
   end)
 
   after_each(function()
     helpers.cleanup(repo)
+    helpers.cleanup(state_tmp)
+    vim.env.XDG_STATE_HOME = nil
   end)
 
   it("exposes the public M surface used by init.lua", function()
@@ -24,6 +40,7 @@ describe("chat orchestrator", function()
       "toggle",
       "add_selection",
       "history_picker",
+      "chats_picker",
       "runs_picker",
       "new",
       "submit",
@@ -65,15 +82,6 @@ describe("chat orchestrator", function()
   end)
 
   it("summarizes the active run for compact work state", function()
-    local function current_chat()
-      for i = 1, 10 do
-        local name, value = debug.getupvalue(M.queue_state, i)
-        if name == "for_current_tab" then
-          return value()
-        end
-      end
-    end
-
     local chat = current_chat()
     assert.is_truthy(chat)
     chat.in_flight = true
@@ -143,6 +151,108 @@ describe("chat orchestrator", function()
     chat.in_flight = false
     chat.current_run = nil
     chat.active_tool_call_id = nil
+  end)
+
+  it("keeps a working chat alive when a new chat is opened", function()
+    local chat = current_chat()
+    assert.is_truthy(chat)
+    chat.title = "working chat"
+    chat.in_flight = true
+    local old_id = chat.persist_id
+
+    M.new()
+
+    local next_chat = current_chat()
+    assert.is_truthy(next_chat)
+    assert.not_equal(old_id, next_chat.persist_id)
+    assert.is_true(chat.in_flight)
+
+    chat.in_flight = false
+    next_chat.in_flight = false
+  end)
+
+  it("slash new opens a subscribed chat without stopping the old one", function()
+    local Events = require("zxz.core.events")
+    local chat = current_chat()
+    assert.is_truthy(chat)
+    chat.in_flight = true
+    local old_id = chat.persist_id
+
+    chat:new_session()
+
+    local next_chat = current_chat()
+    assert.is_truthy(next_chat)
+    assert.not_equal(old_id, next_chat.persist_id)
+    assert.is_true(chat.in_flight)
+
+    local refreshed = false
+    function next_chat:refresh_from_store()
+      refreshed = true
+    end
+    Events.emit("zxz_chat_updated", next_chat.persist_id)
+    vim.wait(1000, function()
+      return refreshed
+    end, 10)
+    assert.is_true(refreshed)
+
+    chat.in_flight = false
+    next_chat.in_flight = false
+  end)
+
+  it("lists live chats by status and can switch without cancelling them", function()
+    local chat = current_chat()
+    assert.is_truthy(chat)
+    chat.title = "needs approval"
+    chat.in_flight = true
+    chat.widget.permission_pending = "tool-1"
+    local old_id = chat.persist_id
+
+    M.new()
+    local next_chat = current_chat()
+    next_chat.title = "new chat"
+    local new_id = next_chat.persist_id
+
+    local captured
+    local format_item
+    local original_select = vim.ui.select
+    vim.ui.select = function(items, opts, on_choice)
+      captured = items
+      format_item = opts.format_item
+      for _, item in ipairs(items) do
+        if item.id == old_id then
+          on_choice(item)
+          return
+        end
+      end
+      on_choice(nil)
+    end
+    M.chats_picker()
+    vim.ui.select = original_select
+
+    assert.is_truthy(captured)
+    local saw_old, saw_new
+    for _, item in ipairs(captured) do
+      if item.id == old_id then
+        saw_old = item
+      elseif item.id == new_id then
+        saw_new = item
+      end
+    end
+    assert.is_truthy(saw_old)
+    assert.is_truthy(saw_new)
+    assert.are.equal("request approval", saw_old.status_label)
+    assert.are.equal("active", saw_old.group_label)
+    assert.are.equal("needs input", saw_new.status_label)
+    assert.are.equal("open", saw_new.group_label)
+    assert.matches("active", format_item(saw_old), nil, true)
+    assert.matches("request approval", format_item(saw_old), nil, true)
+    assert.matches("open", format_item(saw_new), nil, true)
+    assert.are.equal(old_id, current_chat().persist_id)
+    assert.is_true(chat.in_flight)
+
+    chat.widget.permission_pending = nil
+    chat.in_flight = false
+    next_chat.in_flight = false
   end)
 
   it("registers the run review commands", function()
@@ -330,17 +440,10 @@ describe("chat orchestrator", function()
   end)
 
   it("queued prompts keep their own trim state across edits", function()
+    local ChatDB = require("zxz.core.chat_db")
+
     vim.fn.writefile({ "beta" }, repo .. "/b.txt")
     vim.fn.writefile({ "gamma" }, repo .. "/c.txt")
-
-    local function current_chat()
-      for i = 1, 10 do
-        local name, value = debug.getupvalue(M.queue_state, i)
-        if name == "for_current_tab" then
-          return value()
-        end
-      end
-    end
 
     local chat = current_chat()
     assert.is_truthy(chat)
@@ -360,6 +463,10 @@ describe("chat orchestrator", function()
     assert.is_true(ok, tostring(err))
     state = chat:queue_state()
     assert.are.equal(1, state.items[1].trimmed)
+    local queued_rows = ChatDB.list_queue_items(chat.persist_id, "queued")
+    assert.are.equal(1, #queued_rows)
+    assert.are.equal("use @b.txt and @c.txt", queued_rows[1].text)
+    assert.is_true(queued_rows[1].context_records[1].trimmed)
 
     user_msg = chat.history.messages[#chat.history.messages]
     assert.are.equal("@b.txt", user_msg.context_records[1].label)
@@ -368,6 +475,7 @@ describe("chat orchestrator", function()
     assert.is_falsy(user_msg.context_records[2].trimmed)
 
     chat:queue_clear()
+    assert.are.equal(0, #ChatDB.list_queue_items(chat.persist_id, "queued"))
     chat.in_flight = false
   end)
 
@@ -425,6 +533,81 @@ describe("chat orchestrator", function()
     end
     assert.is_true(saw_a)
     assert.is_falsy(saw_b)
+  end)
+
+  it("persists permission and tool-call lifecycle rows while running", function()
+    local ChatDB = require("zxz.core.chat_db")
+    local History = require("zxz.core.history")
+    local Permissions = require("zxz.chat.permissions")
+    local Runs = require("zxz.chat.runs")
+
+    local decision_cb
+    local responded
+    local chat = setmetatable({
+      persist_id = "chat-lifecycle",
+      current_run = {
+        run_id = "run-lifecycle",
+        thread_id = "chat-lifecycle",
+        status = "running",
+        started_at = os.time(),
+        tool_calls = {},
+      },
+      history = History.new(),
+      in_flight = true,
+      permission_queue = {},
+      widget = {
+        render = function() end,
+        bind_permission_keys = function(_, _, _, cb)
+          decision_cb = cb
+        end,
+      },
+    }, {
+      __index = function(_, key)
+        return Permissions[key] or Runs[key]
+      end,
+    })
+    function chat:_set_turn_activity() end
+    function chat:_schedule_persist() end
+
+    chat:_present_permission({
+      toolCall = {
+        toolCallId = "tool-1",
+        kind = "edit",
+        title = "Edit a.txt",
+        rawInput = { path = "a.txt" },
+      },
+      options = {
+        { optionId = "allow-once", kind = "allow_once", name = "allow once" },
+        { optionId = "reject-once", kind = "reject_once", name = "reject once" },
+      },
+    }, function(option_id)
+      responded = option_id
+    end)
+
+    assert.are.equal(1, #ChatDB.list_permissions("chat-lifecycle", "pending"))
+    decision_cb("allow-once", "allow once")
+    assert.are.equal("allow-once", responded)
+    local permissions = ChatDB.list_permissions("chat-lifecycle", "decided")
+    assert.are.equal(1, #permissions)
+    assert.are.equal("allow once", permissions[1].decision)
+
+    chat:_run_append_tool_call("tool-1", {
+      kind = "edit",
+      title = "Edit a.txt",
+      status = "pending",
+      rawInput = { path = "a.txt" },
+    })
+    chat:_run_update_tool_call("tool-1", {
+      status = "completed",
+      content = { { type = "text", text = "done" } },
+      locations = { { path = "a.txt" } },
+    })
+
+    local tool_calls = ChatDB.list_tool_calls_for_run("run-lifecycle")
+    assert.are.equal(1, #tool_calls)
+    assert.are.equal("completed", tool_calls[1].status)
+    assert.are.equal("a.txt", tool_calls[1].raw_input.path)
+    assert.are.equal("a.txt", tool_calls[1].locations[1].path)
   end)
 
   it("reset clears pending context trim", function()

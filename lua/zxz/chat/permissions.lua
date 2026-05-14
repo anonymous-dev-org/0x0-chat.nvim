@@ -1,5 +1,6 @@
 -- Permission gating: render the request inline and bind one-shot key handlers.
 
+local ChatDB = require("zxz.core.chat_db")
 local tool_policy = require("zxz.chat.tool_policy")
 local util = require("zxz.chat.util")
 
@@ -14,6 +15,11 @@ local function find_option(options, wanted_kind)
       return option.optionId, option.name
     end
   end
+end
+
+local function permission_db_id(self, tool_call_id)
+  local run_id = self.current_run and self.current_run.run_id or "pending"
+  return ("%s:%s:%s"):format(self.persist_id or "chat", run_id, tool_call_id or "permission")
 end
 
 ---Drain the next queued permission, if any.
@@ -81,12 +87,29 @@ function M:_present_permission(request, respond)
     raw_input = tool_call.rawInput,
     tool_content = tool_call.content,
   })
+  local permission_id = permission_db_id(self, tool_call_id)
+  ChatDB.save_permission({
+    id = permission_id,
+    chat_id = self.persist_id,
+    run_id = self.current_run and self.current_run.run_id,
+    tool_call_id = tool_call_id,
+    status = "pending",
+    request = request,
+    options = options,
+  })
+  if self._schedule_persist then
+    self:_schedule_persist()
+  end
   self.widget:render()
   util.emit_user("ZxzChatPermission")
   self.widget:bind_permission_keys(tool_call_id, request.options or {}, function(option_id, option_name)
     self.history:set_permission_decision(tool_call_id, option_name or option_id or "rejected")
+    ChatDB.resolve_permission(permission_id, option_name or option_id or "rejected")
     if self.in_flight then
       self:_set_turn_activity("waiting", "Working")
+    end
+    if self._schedule_persist then
+      self:_schedule_persist()
     end
     self.widget:render()
     respond(option_id)

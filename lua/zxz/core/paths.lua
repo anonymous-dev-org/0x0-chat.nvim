@@ -27,6 +27,10 @@ function M.complete_dir()
   return join(M.state_dir(), "complete")
 end
 
+function M.chat_db_path()
+  return join(M.state_dir(), "chat.sqlite")
+end
+
 function M.git_ref_prefix()
   return "refs/0x0/checkpoints/"
 end

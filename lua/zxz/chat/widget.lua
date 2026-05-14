@@ -232,7 +232,7 @@ function ChatWidget:_ensure_transcript_buf()
     return self.transcript_buf
   end
   local bufnr = api.nvim_create_buf(false, true)
-  api.nvim_buf_set_name(bufnr, ("[0x0 Chat #%d]"):format(self.tab_page_id))
+  api.nvim_buf_set_name(bufnr, ("[0x0 Chat #%d:%d]"):format(self.tab_page_id, bufnr))
   vim.bo[bufnr].buftype = "nofile"
   vim.bo[bufnr].bufhidden = "hide"
   vim.bo[bufnr].swapfile = false
@@ -611,7 +611,7 @@ function ChatWidget:_ensure_input_buf()
     return self.input_buf
   end
   local bufnr = api.nvim_create_buf(false, true)
-  api.nvim_buf_set_name(bufnr, ("[0x0 Chat Input #%d]"):format(self.tab_page_id))
+  api.nvim_buf_set_name(bufnr, ("[0x0 Chat Input #%d:%d]"):format(self.tab_page_id, bufnr))
   vim.bo[bufnr].buftype = "nofile"
   vim.bo[bufnr].bufhidden = "hide"
   vim.bo[bufnr].swapfile = false
