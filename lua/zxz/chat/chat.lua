@@ -354,6 +354,7 @@ function Chat:_persist_queue_item(item, index)
   if not item or not self.persist_id then
     return
   end
+  self:_persist_now()
   item.queue_id = item.queue_id or self:_queue_db_id(item)
   ChatDB.save_queue_item({
     id = item.queue_id,
@@ -479,9 +480,10 @@ function Chat:queue_remove(index)
     return false, "queued message not found"
   end
   table.remove(self.queued_prompts, index)
+  self:_remove_queued_history_message(item.id)
+  self:_persist_now()
   self:_delete_queue_item(item)
   self:_persist_queue_order()
-  self:_remove_queued_history_message(item.id)
   self:_set_turn_activity(self.widget.activity_state, self.widget.activity_label)
   self:_rerender_transcript()
   return true
@@ -490,8 +492,9 @@ end
 function Chat:queue_clear()
   while #self.queued_prompts > 0 do
     local item = table.remove(self.queued_prompts)
-    self:_delete_queue_item(item)
     self:_remove_queued_history_message(item.id)
+    self:_persist_now()
+    self:_delete_queue_item(item)
   end
   self:_set_turn_activity(self.widget.activity_state, self.widget.activity_label)
   self:_rerender_transcript()
@@ -584,6 +587,8 @@ function Chat:queue_send_next()
   if not item then
     return false, "queue is empty"
   end
+  self.history:set_user_status(item.id, "active")
+  self:_persist_now()
   self:_delete_queue_item(item)
   self:_persist_queue_order()
   self:_submit_prompt(item.text, item.id, nil, {

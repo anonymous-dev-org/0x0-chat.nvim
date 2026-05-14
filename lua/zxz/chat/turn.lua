@@ -156,6 +156,20 @@ local SLASH_HELP = [[Slash commands:
   /cancel       cancel the in-flight turn
   /stop         reset the session]]
 
+local function enqueue_prompt(chat, prompt, context_summary, context_records, trim)
+  local id = chat.history:add_user(prompt, "queued", context_summary, context_records)
+  table.insert(chat.queued_prompts, {
+    id = id,
+    text = prompt,
+    trim = trim,
+    context_records = context_records,
+    context_summary = context_summary,
+  })
+  if chat._persist_queue_item then
+    chat:_persist_queue_item(chat.queued_prompts[#chat.queued_prompts], #chat.queued_prompts)
+  end
+end
+
 ---@param prompt string
 ---@return boolean handled
 function M:_dispatch_slash(prompt)
@@ -197,17 +211,7 @@ function M:submit()
   local queue_records = vim.deepcopy(context_records)
   apply_context_trim(queue_records, trim)
   if self.in_flight then
-    local id = self.history:add_user(prompt, "queued", context_summary, queue_records)
-    table.insert(self.queued_prompts, {
-      id = id,
-      text = prompt,
-      trim = trim,
-      context_records = queue_records,
-      context_summary = context_summary,
-    })
-    if self._persist_queue_item then
-      self:_persist_queue_item(self.queued_prompts[#self.queued_prompts], #self.queued_prompts)
-    end
+    enqueue_prompt(self, prompt, context_summary, queue_records, trim)
     self.pending_trim = {}
     self.widget:clear_input()
     self:_set_turn_activity(self.widget.activity_state or "waiting", self.widget.activity_label or "Working")
@@ -350,6 +354,12 @@ end
 function M:_notify_or_continue()
   local next_prompt = table.remove(self.queued_prompts, 1)
   if next_prompt then
+    if self.history then
+      self.history:set_user_status(next_prompt.id, "active")
+    end
+    if self._persist_now then
+      self:_persist_now()
+    end
     if self._delete_queue_item then
       self:_delete_queue_item(next_prompt)
     end
@@ -403,17 +413,7 @@ function M:submit_prompt(prompt, opts)
   local queue_records = vim.deepcopy(context_records)
   apply_context_trim(queue_records, trim)
   if self.in_flight then
-    local id = self.history:add_user(prompt, "queued", context_summary, queue_records)
-    table.insert(self.queued_prompts, {
-      id = id,
-      text = prompt,
-      trim = trim,
-      context_records = queue_records,
-      context_summary = context_summary,
-    })
-    if self._persist_queue_item then
-      self:_persist_queue_item(self.queued_prompts[#self.queued_prompts], #self.queued_prompts)
-    end
+    enqueue_prompt(self, prompt, context_summary, queue_records, trim)
     self.pending_trim = {}
     return
   end

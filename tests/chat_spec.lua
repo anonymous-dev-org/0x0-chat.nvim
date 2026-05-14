@@ -469,6 +469,7 @@ describe("chat orchestrator", function()
 
   it("queued prompts keep their own trim state across edits", function()
     local ChatDB = require("zxz.core.chat_db")
+    local HistoryStore = require("zxz.core.history_store")
 
     vim.fn.writefile({ "beta" }, repo .. "/b.txt")
     vim.fn.writefile({ "gamma" }, repo .. "/c.txt")
@@ -486,6 +487,9 @@ describe("chat orchestrator", function()
 
     local user_msg = chat.history.messages[#chat.history.messages]
     assert.is_true(user_msg.context_records[2].trimmed)
+    local saved = HistoryStore.load(chat.persist_id)
+    assert.are.equal("use @a.txt and @b.txt", saved.messages[#saved.messages].text)
+    assert.are.equal("queued", saved.messages[#saved.messages].status)
 
     local ok, err = chat:queue_update(1, "use @b.txt and @c.txt")
     assert.is_true(ok, tostring(err))
@@ -501,10 +505,37 @@ describe("chat orchestrator", function()
     assert.is_true(user_msg.context_records[1].trimmed)
     assert.are.equal("@c.txt", user_msg.context_records[2].label)
     assert.is_falsy(user_msg.context_records[2].trimmed)
+    saved = HistoryStore.load(chat.persist_id)
+    assert.are.equal("use @b.txt and @c.txt", saved.messages[#saved.messages].text)
+    assert.are.equal("@b.txt", saved.messages[#saved.messages].context_records[1].label)
+    assert.is_true(saved.messages[#saved.messages].context_records[1].trimmed)
 
     chat:queue_clear()
     assert.are.equal(0, #ChatDB.list_queue_items(chat.persist_id, "queued"))
     chat.in_flight = false
+  end)
+
+  it("manual queue send stores the follow-up as an active history message before queue rows emit", function()
+    local HistoryStore = require("zxz.core.history_store")
+
+    local chat = current_chat()
+    assert.is_truthy(chat)
+    chat.in_flight = true
+    chat:submit_prompt("follow up")
+    chat.in_flight = false
+
+    local submitted
+    function chat:_submit_prompt(text, id, _, opts)
+      submitted = { text = text, id = id, opts = opts }
+    end
+
+    local ok, err = chat:queue_send_next()
+
+    assert.is_true(ok, tostring(err))
+    assert.are.equal("follow up", submitted.text)
+    local saved = HistoryStore.load(chat.persist_id)
+    assert.are.equal("follow up", saved.messages[#saved.messages].text)
+    assert.are.equal("active", saved.messages[#saved.messages].status)
   end)
 
   it("auto-drained queued prompts preserve trimmed provider context", function()
