@@ -1,5 +1,63 @@
 local M = {}
 
+local function join(...)
+  if vim.fs and vim.fs.joinpath then
+    return vim.fs.joinpath(...)
+  end
+  return table.concat({ ... }, "/")
+end
+
+local function normalize(path)
+  return vim.fn.fnamemodify(path, ":p")
+end
+
+local function executable(command)
+  return type(command) == "string" and command ~= "" and vim.fn.executable(command) == 1
+end
+
+local function plugin_root()
+  local source = debug.getinfo(1, "S").source
+  if source:sub(1, 1) == "@" then
+    source = source:sub(2)
+  end
+  return vim.fn.fnamemodify(source, ":p:h:h:h:h")
+end
+
+function M.resolve_claude_acp_command(opts)
+  opts = opts or {}
+  local root = opts.plugin_root or plugin_root()
+  local is_executable = opts.executable or executable
+
+  local data_bin = join(vim.fn.stdpath("data"), "0x0", "claude-agent-server", "bin", "run")
+  if is_executable(data_bin) then
+    return data_bin
+  end
+
+  local plugin_bin = normalize(join(root, "claude-agent-server", "bin", "run"))
+  if is_executable(plugin_bin) then
+    return plugin_bin
+  end
+
+  local monorepo_bin = normalize(join(root, "..", "claude-agent-server", "bin", "run"))
+  if is_executable(monorepo_bin) then
+    return monorepo_bin
+  end
+
+  if is_executable("claude-agent-server") then
+    return "claude-agent-server"
+  end
+
+  if is_executable("claude-agent-acp") then
+    return "claude-agent-acp"
+  end
+
+  if is_executable("claude-code-acp") then
+    return "claude-code-acp"
+  end
+
+  return "claude-agent-server"
+end
+
 ---@class zxz.ProviderConfig
 ---@field name string
 ---@field command string
@@ -176,13 +234,7 @@ M.defaults = {
   providers = {
     ["claude-acp"] = {
       name = "Claude ACP",
-      command = (function()
-        local local_bin = vim.fn.stdpath("data") .. "/0x0/claude-agent-server/bin/run"
-        if vim.fn.executable(local_bin) == 1 then
-          return local_bin
-        end
-        return "claude-code-acp"
-      end)(),
+      command = M.resolve_claude_acp_command(),
       models = { "claude-opus-4-7", "claude-sonnet-4-6", "claude-haiku-4-5" },
       ignore_stderr_patterns = DEFAULT_STDERR_PATTERNS["claude-acp"],
     },

@@ -1,0 +1,18 @@
+#!/bin/sh
+set -eu
+
+script_dir=$(CDPATH= cd "$(dirname "$0")" && pwd)
+root_dir=$(CDPATH= cd "$script_dir/.." && pwd)
+dist_entry="$root_dir/dist/index.js"
+source_entry="$root_dir/src/index.ts"
+
+if [ -f "$dist_entry" ]; then
+  exec node "$dist_entry" "$@"
+fi
+
+if command -v bun >/dev/null 2>&1; then
+  exec bun "$source_entry" "$@"
+fi
+
+echo "claude-agent-server: dist/index.js is missing. Run 'bun install && bun run build' in $root_dir, or install bun to run from source." >&2
+exit 127

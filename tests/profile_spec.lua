@@ -29,6 +29,31 @@ describe("agent profiles", function()
     assert.same({ "docs/" }, config.current.tool_policy.auto_approve_paths)
   end)
 
+  it("prefers the bundled Claude ACP server over the legacy external command", function()
+    local command = config.resolve_claude_acp_command({
+      plugin_root = "/tmp/monorepo/apps/0x0.nvim",
+      executable = function(command)
+        return (
+          command:find("/tmp/monorepo", 1, true) ~= nil
+          and command:find("claude-agent-server/bin/run", 1, true) ~= nil
+        ) or command == "claude-code-acp"
+      end,
+    })
+    assert.is_truthy(command:find("/tmp/monorepo", 1, true))
+    assert.is_truthy(command:find("claude-agent-server/bin/run", 1, true))
+    assert.are_not.equal("claude-code-acp", command)
+  end)
+
+  it("resolves the bundled Claude ACP server from the public plugin repo layout", function()
+    local command = config.resolve_claude_acp_command({
+      plugin_root = "/tmp/0x0.nvim",
+      executable = function(command)
+        return command == "/tmp/0x0.nvim/claude-agent-server/bin/run"
+      end,
+    })
+    assert.are.equal("/tmp/0x0.nvim/claude-agent-server/bin/run", command)
+  end)
+
   it("rejects unknown profiles", function()
     local ok, err = profiles.set("missing")
     assert.is_false(ok)

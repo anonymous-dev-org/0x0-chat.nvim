@@ -1,0 +1,23 @@
+{
+  "name": "@0x0/claude-agent-server",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "claude-agent-server": "./bin/run"
+  },
+  "scripts": {
+    "build": "tsc -p . && bun build src/index.ts --target=node --outfile=dist/index.js",
+    "dev": "tsc -p . --watch",
+    "test": "bun test",
+    "typecheck": "tsc -p . --noEmit",
+    "lint": "biome lint src tests",
+    "format": "biome format --write src tests"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.69.0"
+  },
+  "devDependencies": {
+    "typescript": "^6.0.3"
+  }
+}
