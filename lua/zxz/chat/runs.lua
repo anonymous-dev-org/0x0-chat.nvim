@@ -24,7 +24,8 @@ end
 ---Begin a Run record. Called from `_submit_prompt` once a checkpoint exists
 ---and we are not in a retry path. `self.checkpoint` carries the start ref.
 ---@param prompt string
-function M:_start_run(prompt)
+---@param user_id string|nil
+function M:_start_run(prompt, user_id)
   if not self.checkpoint then
     return
   end
@@ -44,6 +45,7 @@ function M:_start_run(prompt)
       model = self.model,
       mode = self.mode,
     },
+    user_id = user_id,
     prompt_summary = summarize(prompt),
     root = self.checkpoint.root,
     start_ref = self.checkpoint.ref,

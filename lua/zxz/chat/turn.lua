@@ -276,7 +276,7 @@ function M:_submit_prompt(prompt, user_id, retried_session, opts)
       return
     end
     if not retried_session then
-      self:_start_run(prompt)
+      self:_start_run(prompt, user_id)
     end
     self:_set_turn_activity("waiting", "Working")
     local cwd = self:_session_cwd()

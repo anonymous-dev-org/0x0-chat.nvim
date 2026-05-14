@@ -7,7 +7,6 @@ local ChatDB = require("zxz.core.chat_db")
 local History = require("zxz.core.history")
 local HistoryStore = require("zxz.core.history_store")
 local RunsStore = require("zxz.core.runs_store")
-local Events = require("zxz.core.events")
 local ChatWidget = require("zxz.chat.widget")
 local Checkpoint = require("zxz.core.checkpoint")
 local InlineDiff = require("zxz.edit.inline_diff")
@@ -746,17 +745,8 @@ local function set_active_chat(tab, chat)
   Runtime.set_active(tab, chat)
   if state.unsubscribe then
     state.unsubscribe()
+    state.unsubscribe = nil
   end
-  state.unsubscribe = Events.on("zxz_chat_updated", function(chat_id)
-    if state.active ~= chat or chat_id ~= chat.persist_id then
-      return
-    end
-    vim.schedule(function()
-      if state.active == chat then
-        chat:refresh_from_store()
-      end
-    end)
-  end)
   chat:open()
   chat.widget:render()
 end

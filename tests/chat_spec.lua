@@ -199,7 +199,7 @@ describe("chat orchestrator", function()
     next_chat.in_flight = false
   end)
 
-  it("slash new opens a subscribed chat without stopping the old one", function()
+  it("slash new opens a chat without stopping the old one or self-refreshing", function()
     local Events = require("zxz.core.events")
     local chat = current_chat()
     assert.is_truthy(chat)
@@ -218,10 +218,10 @@ describe("chat orchestrator", function()
       refreshed = true
     end
     Events.emit("zxz_chat_updated", next_chat.persist_id)
-    vim.wait(1000, function()
-      return refreshed
-    end, 10)
-    assert.is_true(refreshed)
+    vim.wait(100, function()
+      return true
+    end)
+    assert.is_false(refreshed)
 
     chat.in_flight = false
     next_chat.in_flight = false
@@ -536,6 +536,95 @@ describe("chat orchestrator", function()
     local saved = HistoryStore.load(chat.persist_id)
     assert.are.equal("follow up", saved.messages[#saved.messages].text)
     assert.are.equal("active", saved.messages[#saved.messages].status)
+  end)
+
+  it("does not let store update events clobber live tool-call history", function()
+    local Events = require("zxz.core.events")
+
+    local chat = current_chat()
+    assert.is_truthy(chat)
+    chat.history:add_user("do work")
+    chat:_persist_now()
+    chat.history:add({
+      type = "tool_call",
+      tool_call_id = "tool-1",
+      kind = "edit",
+      title = "Edit a.txt",
+      status = "pending",
+    })
+
+    Events.emit("zxz_chat_updated", chat.persist_id)
+    vim.wait(100, function()
+      return true
+    end)
+
+    local tool_calls = vim.tbl_filter(function(msg)
+      return msg.type == "tool_call"
+    end, chat.history.messages)
+    assert.are.equal(1, #tool_calls)
+    assert.are.equal("tool-1", tool_calls[1].tool_call_id)
+  end)
+
+  it("restores missing tool-call rows from persisted run history", function()
+    local HistoryStore = require("zxz.core.history_store")
+    local RunsStore = require("zxz.core.runs_store")
+
+    HistoryStore.save({
+      id = "chat-with-run-tools",
+      title = "run tools",
+      created_at = os.time(),
+      messages = {
+        { type = "user", id = "1", text = "do work", status = "active" },
+        { type = "agent", text = "done" },
+        { type = "user", id = "2", text = "do work", status = "active" },
+        { type = "agent", text = "done again" },
+      },
+      run_ids = { "run-with-tool" },
+    })
+    RunsStore.save({
+      run_id = "run-with-tool",
+      thread_id = "chat-with-run-tools",
+      status = "completed",
+      user_id = "1",
+      prompt_summary = "do work",
+      tool_calls = {
+        {
+          tool_call_id = "tool-1",
+          kind = "edit",
+          title = "Edit a.txt",
+          status = "completed",
+          raw_input = { path = "a.txt" },
+          content = { { type = "text", text = "done" } },
+          edit_event_ids = { "event-1" },
+        },
+      },
+      edit_events = {
+        {
+          id = "event-1",
+          tool_call_id = "tool-1",
+          path = "a.txt",
+          additions = 1,
+          deletions = 0,
+          hunks = {},
+        },
+      },
+    })
+
+    local chat = current_chat()
+    chat:load_thread("chat-with-run-tools", { hidden = true })
+
+    local tool_calls = vim.tbl_filter(function(msg)
+      return msg.type == "tool_call"
+    end, chat.history.messages)
+    assert.are.equal(1, #tool_calls)
+    assert.are.equal("tool-1", tool_calls[1].tool_call_id)
+    assert.are.equal("Edit a.txt", tool_calls[1].title)
+    assert.are.equal("a.txt", tool_calls[1].raw_input.path)
+    assert.are.equal(1, #tool_calls[1].edit_events)
+    assert.are.equal("user", chat.history.messages[1].type)
+    assert.are.equal("1", chat.history.messages[1].id)
+    assert.are.equal("tool_call", chat.history.messages[2].type)
+    assert.are.equal("agent", chat.history.messages[3].type)
   end)
 
   it("auto-drained queued prompts preserve trimmed provider context", function()
