@@ -41,11 +41,17 @@ function M.show(bufnr, row, col, text)
   if text == "" then
     return
   end
+  local line = vim.api.nvim_buf_get_lines(bufnr, row, row + 1, false)[1] or ""
+  if col < #line then
+    M.clear()
+    return
+  end
 
   setup_highlights()
   M.clear()
 
-  local first_line = vim.split(text, "\n", { plain = true })[1] or ""
+  local lines = vim.split(text, "\n", { plain = true })
+  local first_line = lines[1] or ""
   if first_line == "" then
     return
   end
@@ -54,7 +60,7 @@ function M.show(bufnr, row, col, text)
     bufnr = bufnr,
     row = row,
     col = col,
-    text = first_line,
+    text = text,
     extmark_ids = {},
   }
 
@@ -65,6 +71,22 @@ function M.show(bufnr, row, col, text)
   })
   if ok then
     table.insert(_state.extmark_ids, id)
+  end
+
+  if #lines > 1 then
+    local virt_lines = {}
+    for i = 2, #lines do
+      virt_lines[#virt_lines + 1] = { { lines[i], "ZxzCompleteGhost" } }
+    end
+
+    local lines_ok, lines_id = pcall(vim.api.nvim_buf_set_extmark, bufnr, ns, row, 0, {
+      virt_lines = virt_lines,
+      virt_lines_above = false,
+      priority = 999,
+    })
+    if lines_ok then
+      table.insert(_state.extmark_ids, lines_id)
+    end
   end
 end
 
@@ -99,8 +121,14 @@ function M.accept()
 
   M.clear()
 
-  vim.api.nvim_buf_set_text(bufnr, row, col, row, col, { text })
-  vim.api.nvim_win_set_cursor(0, { row + 1, col + #text })
+  local lines = vim.split(text, "\n", { plain = true })
+  vim.api.nvim_buf_set_text(bufnr, row, col, row, col, lines)
+
+  if #lines == 1 then
+    vim.api.nvim_win_set_cursor(0, { row + 1, col + #text })
+  else
+    vim.api.nvim_win_set_cursor(0, { row + #lines, #lines[#lines] })
+  end
 
   return true
 end

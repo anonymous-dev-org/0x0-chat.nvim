@@ -44,7 +44,7 @@ local function visible_completion(text, before)
   if vim.trim(first_line) == "" then
     return nil
   end
-  return first_line
+  return text
 end
 
 function M._mode()
@@ -118,9 +118,14 @@ function M._on_text_changed()
   local col = cursor[2]
   local line = vim.api.nvim_buf_get_lines(bufnr, row - 1, row, false)[1] or ""
   local before = line:sub(1, col)
+  local after = line:sub(col + 1)
 
   -- Don't trigger on empty lines or very short prefixes
   if before:match("^%s*$") then
+    M.dismiss()
+    return
+  end
+  if after ~= "" then
     M.dismiss()
     return
   end
@@ -168,6 +173,11 @@ function M._request_completion()
   local col = cursor[2] -- 0-based
   local line = vim.api.nvim_buf_get_lines(bufnr, row, row + 1, false)[1] or ""
   local before = line:sub(1, col)
+  local after = line:sub(col + 1)
+  if after ~= "" then
+    M.dismiss()
+    return
+  end
   local cwd = vim.fn.getcwd()
   local provider = resolve_provider()
   if not provider then
