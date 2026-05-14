@@ -192,7 +192,11 @@ local function last_run(chat)
 end
 
 local STATUS_META = {
-  request_approval = { label = "request approval", group = "active", order = 10 },
+  request_approval = {
+    label = "request approval",
+    group = "active",
+    order = 10,
+  },
   approval = { label = "request approval", group = "active", order = 10 },
   working = { label = "working", group = "active", order = 20 },
   failed = { label = "failed", group = "active", order = 30 },
@@ -580,7 +584,13 @@ end
 ---@return string|nil err
 function Chat:queue_send_next()
   if self.in_flight then
-    return false, "agent is still working"
+    if #self.queued_prompts == 0 then
+      return false, "queue is empty"
+    end
+    -- Interrupt: cancel the running turn so _notify_or_continue picks up
+    -- the queued prompt in FIFO order.
+    self:cancel()
+    return true
   end
   local item = table.remove(self.queued_prompts, 1)
   if not item then

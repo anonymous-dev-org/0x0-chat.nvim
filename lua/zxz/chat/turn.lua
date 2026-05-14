@@ -213,8 +213,12 @@ function M:submit()
     enqueue_prompt(self, prompt, context_summary, queue_records, trim)
     self.pending_trim = {}
     self.widget:clear_input()
-    self:_set_turn_activity(self.widget.activity_state or "waiting", self.widget.activity_label or "Working")
+    self:_set_turn_activity(self.widget.activity_state or "waiting", "Interrupting")
     self.widget:render()
+    -- Interrupt the in-flight turn so _notify_or_continue picks up the queued
+    -- prompt (or earlier queued prompts in FIFO order) immediately, instead
+    -- of waiting for the agent to finish the current turn on its own.
+    self:cancel()
     return
   end
   local id = self.history:add_user(prompt, "active", context_summary, queue_records)
@@ -414,6 +418,7 @@ function M:submit_prompt(prompt, opts)
   if self.in_flight then
     enqueue_prompt(self, prompt, context_summary, queue_records, trim)
     self.pending_trim = {}
+    self:cancel()
     return
   end
   local id = self.history:add_user(prompt, "active", context_summary, queue_records)

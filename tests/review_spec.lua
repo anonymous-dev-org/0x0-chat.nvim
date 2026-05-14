@@ -75,7 +75,7 @@ describe("zxz review buffer", function()
     local cp = assert(Checkpoint.snapshot(root))
     helpers.write_file(root .. "/a.txt", "alpha\nbeta\n")
 
-    require("zxz.edit.review").open_checkpoint(cp, { chat = {} })
+    require("zxz.edit.review").open_checkpoint(cp, { chat = {}, expand_all = true })
 
     assert.are.equal("zxz-review", vim.bo.filetype)
     local lines = vim.api.nvim_buf_get_lines(0, 0, -1, false)
@@ -93,7 +93,7 @@ describe("zxz review buffer", function()
     local cp = assert(Checkpoint.snapshot(root))
     helpers.write_file(root .. "/a.txt", three_hunk_content("old-one", "old-two", "new-three"))
 
-    Review.open_checkpoint(cp, { chat = {} })
+    Review.open_checkpoint(cp, { chat = {}, expand_all = true })
     cursor_to_line("+new-three")
     helpers.write_file(root .. "/a.txt", three_hunk_content("new-one\nnew-extra", "old-two", "new-three"))
     Review.refresh_checkpoint(cp)
@@ -111,7 +111,7 @@ describe("zxz review buffer", function()
     local abs = root .. "/a.txt"
     helpers.write_file(abs, "alpha\nbeta\n")
 
-    require("zxz.edit.review").open_checkpoint(cp, { chat = {} })
+    require("zxz.edit.review").open_checkpoint(cp, { chat = {}, expand_all = true })
     local review_buf = vim.api.nvim_get_current_buf()
     assert.is_truthy(
       vim.tbl_contains(vim.api.nvim_buf_get_lines(review_buf, 0, -1, false), "[ ] hunk 1/1 @@ -1 +1,2 @@")
@@ -133,7 +133,7 @@ describe("zxz review buffer", function()
     local cp = assert(Checkpoint.snapshot(root))
     helpers.write_file(root .. "/a.txt", "alpha\nbeta\n")
 
-    require("zxz.edit.review").open_checkpoint(cp, { chat = {} })
+    require("zxz.edit.review").open_checkpoint(cp, { chat = {}, expand_all = true })
     cursor_to_line("M a.txt")
     assert.is_true(require("zxz.edit.verbs").reject_file())
 
@@ -157,7 +157,7 @@ describe("zxz review buffer", function()
       start_sha = start_cp.sha,
       end_sha = end_cp.sha,
       files_touched = { "a.txt" },
-    }, { chat = {} })
+    }, { chat = {}, expand_all = true })
     cursor_to_line("M a.txt")
     assert.is_true(require("zxz.edit.verbs").reject_file())
 
@@ -189,7 +189,7 @@ describe("zxz review buffer", function()
       end_sha = end_cp.sha,
       files_touched = { "a.txt" },
       edit_events = { event },
-    }, { chat = {} })
+    }, { chat = {}, expand_all = true })
     cursor_to_line("tool-saved")
     assert.is_true(require("zxz.edit.verbs").accept_current())
 
@@ -223,7 +223,7 @@ describe("zxz review buffer", function()
       end_sha = end_cp.sha,
       files_touched = { "a.txt" },
       edit_events = { event },
-    }, { chat = {} })
+    }, { chat = {}, expand_all = true })
     cursor_to_line("[ ] hunk 2/2")
     assert.is_true(require("zxz.edit.verbs").reject_current())
 
@@ -261,7 +261,7 @@ describe("zxz review buffer", function()
       end_sha = end_cp.sha,
       files_touched = { "a.txt" },
       edit_events = { event },
-    }, { chat = {} })
+    }, { chat = {}, expand_all = true })
     cursor_to_line("tool-saved")
     assert.is_true(require("zxz.edit.verbs").accept_current())
 
@@ -299,7 +299,7 @@ describe("zxz review buffer", function()
       end_sha = end_cp.sha,
       files_touched = { "a.txt" },
       edit_events = { event },
-    }, { chat = {} })
+    }, { chat = {}, expand_all = true })
     cursor_to_line("tool-saved")
     assert.is_true(require("zxz.edit.verbs").accept_current())
 
@@ -315,7 +315,7 @@ describe("zxz review buffer", function()
     local cp = assert(Checkpoint.snapshot(root))
     helpers.write_file(root .. "/a.txt", two_hunk_content("new-one", "new-two"))
 
-    require("zxz.edit.review").open_checkpoint(cp, { chat = {} })
+    require("zxz.edit.review").open_checkpoint(cp, { chat = {}, expand_all = true })
     cursor_to_line("[ ] hunk 1/2")
     assert.is_true(require("zxz.edit.verbs").accept_current())
 
@@ -335,7 +335,7 @@ describe("zxz review buffer", function()
     local cp = assert(Checkpoint.snapshot(root))
     helpers.write_file(root .. "/a.txt", two_hunk_content("new-one", "new-two"))
 
-    require("zxz.edit.review").open_checkpoint(cp, { chat = {} })
+    require("zxz.edit.review").open_checkpoint(cp, { chat = {}, expand_all = true })
     cursor_to_line("[ ] hunk 2/2")
     assert.is_true(require("zxz.edit.verbs").reject_current())
 
@@ -353,7 +353,7 @@ describe("zxz review buffer", function()
     local cp = assert(Checkpoint.snapshot(root))
     helpers.write_file(root .. "/a.txt", two_hunk_content("new-one", "new-two"))
 
-    require("zxz.edit.review").open_checkpoint(cp, { chat = {} })
+    require("zxz.edit.review").open_checkpoint(cp, { chat = {}, expand_all = true })
     local review_buf = vim.api.nvim_get_current_buf()
     cursor_to_line("[ ] hunk 2/2")
     assert.is_true(require("zxz.edit.review").current_action("open_file"))
@@ -380,7 +380,7 @@ describe("zxz review buffer", function()
     EditEvents.record(event)
     helpers.write_file(root .. "/a.txt", "new\n")
 
-    require("zxz.edit.review").open_checkpoint(cp, { chat = {} })
+    require("zxz.edit.review").open_checkpoint(cp, { chat = {}, expand_all = true })
 
     local lines = vim.api.nvim_buf_get_lines(0, 0, -1, false)
     assert.is_truthy(vim.tbl_contains(lines, "[ ] hunk 1/1 @@ -1 +1 @@ · tool-review"))
@@ -410,7 +410,7 @@ describe("zxz review buffer", function()
     helpers.write_file(root .. "/a.txt", "new\n")
     helpers.write_file(root .. "/b.txt", "after\n")
 
-    require("zxz.edit.review").open_checkpoint(cp, { chat = {} })
+    require("zxz.edit.review").open_checkpoint(cp, { chat = {}, expand_all = true })
 
     local lines = vim.api.nvim_buf_get_lines(0, 0, -1, false)
     assert.is_truthy(vim.tbl_contains(lines, "[ ] hunk 1/1 @@ -1 +1 @@ · tool-review-mixed"))
@@ -447,7 +447,7 @@ describe("zxz review buffer", function()
     EditEvents.record(second)
     helpers.write_file(root .. "/a.txt", after_second)
 
-    require("zxz.edit.review").open_checkpoint(cp, { chat = {} })
+    require("zxz.edit.review").open_checkpoint(cp, { chat = {}, expand_all = true })
 
     local lines = vim.api.nvim_buf_get_lines(0, 0, -1, false)
     assert.is_truthy(vim.tbl_contains(lines, "M a.txt (2 hunks)"))
@@ -489,7 +489,7 @@ describe("zxz review buffer", function()
     EditEvents.record(second)
     helpers.write_file(root .. "/a.txt", "newer\n")
 
-    require("zxz.edit.review").open_checkpoint(cp, { chat = {} })
+    require("zxz.edit.review").open_checkpoint(cp, { chat = {}, expand_all = true })
 
     local lines = vim.api.nvim_buf_get_lines(0, 0, -1, false)
     assert.is_truthy(vim.tbl_contains(lines, "[ ] hunk 1/1 @@ -1 +1 @@ · tool-first"))
@@ -522,7 +522,7 @@ describe("zxz review buffer", function()
     EditEvents.record(event)
     helpers.write_file(root .. "/large.txt", "new\n")
 
-    require("zxz.edit.review").open_checkpoint(cp, { chat = {} })
+    require("zxz.edit.review").open_checkpoint(cp, { chat = {}, expand_all = true })
 
     local lines = vim.api.nvim_buf_get_lines(0, 0, -1, false)
     assert.is_truthy(vim.tbl_contains(lines, "M large.txt (file-level)"))

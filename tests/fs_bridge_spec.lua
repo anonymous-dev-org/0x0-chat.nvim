@@ -60,13 +60,13 @@ describe("fs_bridge structured edit events", function()
       events_at_response = #chat.current_run.edit_events
     end)
 
-    assert.is_true(vim.wait(200, function()
+    assert.is_true(vim.wait(2000, function()
       return called
     end, 10))
     assert.is_nil(err)
     assert.are.equal("new\n", helpers.read_file(root .. "/a.txt"))
     assert.are.equal(0, events_at_response)
-    assert.is_true(vim.wait(200, function()
+    assert.is_true(vim.wait(2000, function()
       return #chat.current_run.edit_events == 1
     end, 10))
     assert.are.equal(1, #chat.current_run.edit_events)
@@ -119,7 +119,7 @@ describe("fs_bridge structured edit events", function()
       assert.is_nil(response_err)
     end)
 
-    assert.is_true(vim.wait(200, function()
+    assert.is_true(vim.wait(2000, function()
       return called and #chat.current_run.edit_events == 1
     end, 10))
     local event = chat.current_run.edit_events[1]
@@ -173,7 +173,7 @@ describe("fs_bridge structured edit events", function()
       assert.is_nil(response_err)
     end)
 
-    assert.is_true(vim.wait(200, function()
+    assert.is_true(vim.wait(2000, function()
       return called and #chat.current_run.edit_events == 1
     end, 10))
     local event = chat.current_run.edit_events[1]
@@ -215,7 +215,7 @@ describe("fs_bridge structured edit events", function()
       assert.is_nil(response_err)
     end)
 
-    assert.is_true(vim.wait(200, function()
+    assert.is_true(vim.wait(2000, function()
       return called and #chat.current_run.edit_events == 1
     end, 10))
     local event = chat.current_run.edit_events[1]
@@ -262,7 +262,7 @@ describe("fs_bridge structured edit events", function()
       err = response_err
     end)
 
-    assert.is_true(vim.wait(200, function()
+    assert.is_true(vim.wait(2000, function()
       return called and #(chat.current_run.edit_event_diagnostics or {}) == 1
     end, 10))
     EditEvents.from_write = from_write

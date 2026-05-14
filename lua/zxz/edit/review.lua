@@ -178,6 +178,7 @@ local function build_checkpoint_state(checkpoint, chat)
     title = ("0x0 Review | checkpoint %s"):format(checkpoint.turn_id or "?"),
     files = files,
     statuses = {},
+    expanded = {},
   }
 end
 
@@ -232,6 +233,7 @@ local function build_run_state(run, chat)
     title = ("0x0 Review | run %s"):format(run.run_id or "?"),
     files = files,
     statuses = {},
+    expanded = {},
   }
 end
 
@@ -254,7 +256,7 @@ local function file_label(state, file)
   return ("%s %s %s (%d hunk%s)"):format(prefix, kind, file.path, hunks, hunks == 1 and "" or "s")
 end
 
-local function file_header(file)
+local function file_header(_state, file)
   local parsed = file.parsed or {}
   local kind = STATUS_LABEL[parsed.type or "modify"] or "M"
   local hunks = parsed.hunks and #parsed.hunks or 0
@@ -292,7 +294,7 @@ local function render(bufnr)
   local lines = {
     "# 0x0 Review",
     state.title,
-    "Keys: a/r hunk | A/R file | ga/gr all | u undo reject | <CR> open file | q close",
+    "Keys: <Tab> expand | dd diffsplit | a/r hunk | A/R file | ga/gr all | u undo reject | <CR> open | q close",
     "",
   }
   local line_file = {}
@@ -301,31 +303,33 @@ local function render(bufnr)
     lines[#lines + 1] = "No unresolved changes."
   end
   for _, file in ipairs(state.files or {}) do
+    local hunks = file.parsed and file.parsed.hunks or {}
     local row = #lines + 1
-    lines[row] = file_header(file)
+    lines[row] = file_header(state, file)
     line_file[row] = file
     line_item[row] = { kind = "file", file = file }
-    local hunks = file.parsed and file.parsed.hunks or {}
-    for idx, hunk in ipairs(hunks) do
-      local n = #lines + 1
-      lines[n] = hunk_label(state, file, hunk, idx, #hunks)
-      line_file[n] = file
-      line_item[n] = { kind = "hunk_header", file = file, hunk = hunk, hunk_index = idx }
-      for _, line in ipairs(hunk.diff_lines or {}) do
-        if not line:match("^@@") then
-          local diff_row = #lines + 1
-          lines[diff_row] = line
-          line_file[diff_row] = file
-          line_item[diff_row] = { kind = "hunk_line", file = file, hunk = hunk, hunk_index = idx }
-        end
-      end
-      lines[#lines + 1] = ""
-    end
     if #hunks == 0 then
       local n = #lines + 1
       lines[n] = file_label(state, file)
       line_file[n] = file
       line_item[n] = { kind = "file", file = file }
+    end
+    if state.expanded and state.expanded[file.path] then
+      for idx, hunk in ipairs(hunks) do
+        local n = #lines + 1
+        lines[n] = hunk_label(state, file, hunk, idx, #hunks)
+        line_file[n] = file
+        line_item[n] = { kind = "hunk_header", file = file, hunk = hunk, hunk_index = idx }
+        for _, line in ipairs(hunk.diff_lines or {}) do
+          if not line:match("^@@") then
+            local diff_row = #lines + 1
+            lines[diff_row] = line
+            line_file[diff_row] = file
+            line_item[diff_row] = { kind = "hunk_line", file = file, hunk = hunk, hunk_index = idx }
+          end
+        end
+        lines[#lines + 1] = ""
+      end
     end
   end
 
@@ -340,7 +344,9 @@ local function render(bufnr)
       vim.api.nvim_buf_set_extmark(bufnr, NS, row - 1, 0, { line_hl_group = "Title" })
     elseif file then
       local line = lines[row] or ""
-      local hl = line:sub(1, 1) == "+" and "DiffAdd" or (line:sub(1, 1) == "-" and "DiffDelete" or nil)
+      local content = line:match("^%s*(.-)$") or line
+      local first = content:sub(1, 1)
+      local hl = first == "+" and "DiffAdd" or (first == "-" and "DiffDelete" or nil)
       if hl then
         vim.api.nvim_buf_set_extmark(bufnr, NS, row - 1, 0, { line_hl_group = hl })
       end
@@ -867,6 +873,86 @@ local function open_file(state)
   return true
 end
 
+local function toggle_expand(state, bufnr)
+  local file = current_file(state)
+  if not file then
+    return false
+  end
+  local hunks = file.parsed and file.parsed.hunks or {}
+  if #hunks == 0 then
+    return false
+  end
+  state.expanded = state.expanded or {}
+  state.expanded[file.path] = not state.expanded[file.path]
+  render_preserving_selection(bufnr)
+  return true
+end
+
+local function original_content(state, file)
+  if state.kind == "checkpoint" then
+    local content = Checkpoint.read_file(state.checkpoint, file.path)
+    return content or ""
+  end
+  if state.kind == "run" and state.run and state.run.start_sha then
+    local out = vim.fn.system({
+      "git",
+      "-C",
+      state.root,
+      "show",
+      state.run.start_sha .. ":" .. file.path,
+    })
+    if vim.v.shell_error ~= 0 then
+      return ""
+    end
+    return out or ""
+  end
+  return ""
+end
+
+local function open_diffsplit(state)
+  local file = current_file(state)
+  if not file then
+    return false
+  end
+  local abs = state.root .. "/" .. file.path
+  local before = original_content(state, file)
+  local ft
+  local opened = false
+  for _, win in ipairs(vim.api.nvim_tabpage_list_wins(0)) do
+    local buf = vim.api.nvim_win_get_buf(win)
+    if vim.api.nvim_buf_get_name(buf) == abs then
+      vim.api.nvim_set_current_win(win)
+      ft = vim.bo[buf].filetype
+      opened = true
+      break
+    end
+  end
+  if not opened then
+    vim.cmd("rightbelow vertical noswapfile split " .. vim.fn.fnameescape(abs))
+    ft = vim.bo.filetype
+  end
+  vim.cmd("diffthis")
+  local origin_win = vim.api.nvim_get_current_win()
+  vim.cmd("leftabove vertical new")
+  local scratch = vim.api.nvim_get_current_buf()
+  vim.bo[scratch].buftype = "nofile"
+  vim.bo[scratch].bufhidden = "wipe"
+  vim.bo[scratch].swapfile = false
+  if ft and ft ~= "" then
+    vim.bo[scratch].filetype = ft
+  end
+  local before_lines = vim.split(before or "", "\n", { plain = true })
+  if before_lines[#before_lines] == "" then
+    table.remove(before_lines)
+  end
+  vim.api.nvim_buf_set_lines(scratch, 0, -1, false, before_lines)
+  vim.bo[scratch].modifiable = false
+  pcall(vim.api.nvim_buf_set_name, scratch, ("0x0:before:%s"):format(file.path))
+  vim.cmd("diffthis")
+  vim.api.nvim_set_current_win(origin_win)
+  return true
+end
+
 local function jump_hunk(direction)
   local state = select(1, current_state())
   if not state or not state.line_item then
@@ -920,6 +1006,10 @@ function M.current_action(action)
     return jump_hunk(-1)
   elseif action == "open_file" then
     return open_file(state)
+  elseif action == "toggle_expand" then
+    return toggle_expand(state, bufnr)
+  elseif action == "diffsplit" then
+    return open_diffsplit(state)
   end
   local fn = ACTIONS[action]
   if not fn then
@@ -963,6 +1053,18 @@ local function bind(bufnr)
   vim.keymap.set("n", "[h", function()
     require("zxz.edit.verbs").prev_hunk()
   end, vim.tbl_extend("force", opts, { desc = "0x0 review: previous hunk" }))
+  vim.keymap.set("n", "<Tab>", function()
+    local state = states[bufnr]
+    if state then
+      toggle_expand(state, bufnr)
+    end
+  end, vim.tbl_extend("force", opts, { desc = "0x0 review: toggle file hunks" }))
+  vim.keymap.set("n", "dd", function()
+    local state = states[bufnr]
+    if state then
+      open_diffsplit(state)
+    end
+  end, vim.tbl_extend("force", opts, { desc = "0x0 review: diffsplit current file" }))
   vim.keymap.set("n", "q", function()
     pcall(vim.cmd, "bdelete")
   end, vim.tbl_extend("force", opts, { desc = "0x0 review: close" }))
@@ -991,12 +1093,23 @@ local function open_state(state)
   })
 end
 
+local function apply_expand_all(state, expand_all)
+  if not expand_all then
+    return
+  end
+  state.expanded = state.expanded or {}
+  for _, file in ipairs(state.files or {}) do
+    state.expanded[file.path] = true
+  end
+end
+
 function M.open_checkpoint(checkpoint, opts)
   local state, err = build_checkpoint_state(checkpoint, opts and opts.chat)
   if not state then
     vim.notify("0x0: " .. (err or "nothing to review"), vim.log.levels.INFO)
     return
   end
+  apply_expand_all(state, opts and opts.expand_all)
   open_state(state)
 end
 
@@ -1006,6 +1119,7 @@ function M.open_run(run, opts)
     vim.notify("0x0: " .. (err or "nothing to review"), vim.log.levels.INFO)
     return
   end
+  apply_expand_all(state, opts and opts.expand_all)
   open_state(state)
 end
 
