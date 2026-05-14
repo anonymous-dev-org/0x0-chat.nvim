@@ -205,7 +205,6 @@ function M:submit()
   if self:_dispatch_slash(prompt) then
     return
   end
-  self.widget:push_history(prompt)
   local context_records, context_summary = context_for_prompt(prompt, self:_session_cwd())
   local trim = filter_trim_map(self.pending_trim, context_records)
   local queue_records = vim.deepcopy(context_records)

@@ -110,9 +110,6 @@ function ChatWidget.new(tab_page_id, history, on_submit, on_cancel, work_state_p
     work_state_provider = work_state_provider,
     agent_run_open = false,
     suppress_scroll_once = false,
-    prompt_history = {},
-    prompt_history_index = 0,
-    prompt_history_draft = nil,
   }, ChatWidget)
 end
 
@@ -620,30 +617,16 @@ function ChatWidget:_ensure_input_buf()
   vim.bo[bufnr].filetype = "zxz-chat-input"
   disable_ambient_completion(bufnr)
 
-  local base_opts = { buffer = bufnr, nowait = true, silent = true }
-  local function map(mode, lhs, fn, desc, extra)
-    local o = vim.tbl_extend("force", base_opts, { desc = desc })
-    if extra then
-      o = vim.tbl_extend("force", o, extra)
-    end
-    vim.keymap.set(mode, lhs, fn, o)
-  end
-
-  map("n", "<CR>", function()
+  local opts = { buffer = bufnr, nowait = true, silent = true }
+  vim.keymap.set("n", "<CR>", function()
     self.on_submit()
-  end, "0x0 chat submit")
-  map("n", "<localleader>c", function()
+  end, vim.tbl_extend("force", opts, { desc = "0x0 chat submit" }))
+  vim.keymap.set("n", "<localleader>c", function()
     self.on_cancel()
-  end, "0x0 chat cancel")
-  map("n", "<localleader>d", function()
+  end, vim.tbl_extend("force", opts, { desc = "0x0 chat cancel" }))
+  vim.keymap.set("n", "<localleader>d", function()
     require("zxz.chat.chat").review()
-  end, "0x0 chat review diff")
-  map("n", "<C-p>", function()
-    self:nav_history(-1)
-  end, "0x0 chat previous prompt")
-  map("n", "<C-n>", function()
-    self:nav_history(1)
-  end, "0x0 chat next prompt")
+  end, vim.tbl_extend("force", opts, { desc = "0x0 chat review diff" }))
 
   self.input_buf = bufnr
   attach_input_sanitizer(bufnr)
@@ -690,7 +673,7 @@ function ChatWidget:open()
     vim.cmd("belowright split")
     self.input_win = api.nvim_get_current_win()
     api.nvim_win_set_buf(self.input_win, input)
-    api.nvim_win_set_height(self.input_win, config.current.input_height or 8)
+    api.nvim_win_set_height(self.input_win, config.current.input_height or 3)
     vim.wo[self.input_win].wrap = true
     vim.wo[self.input_win].linebreak = true
     vim.wo[self.input_win].winfixheight = true
@@ -698,6 +681,7 @@ function ChatWidget:open()
     vim.wo[self.input_win].relativenumber = false
     vim.wo[self.input_win].signcolumn = "no"
     vim.wo[self.input_win].winbar = ""
+    vim.wo[self.input_win].statusline = " "
   end
 
   if win_valid(self.input_win) then
@@ -771,55 +755,6 @@ function ChatWidget:prepend_input(lines)
   vim.list_extend(combined, lines)
   vim.list_extend(combined, existing)
   api.nvim_buf_set_lines(self.input_buf, 0, -1, false, combined)
-end
-
----@param text string
-function ChatWidget:push_history(text)
-  if not text or text == "" then
-    return
-  end
-  if self.prompt_history[#self.prompt_history] == text then
-    self.prompt_history_index = 0
-    self.prompt_history_draft = nil
-    return
-  end
-  self.prompt_history[#self.prompt_history + 1] = text
-  if #self.prompt_history > 100 then
-    table.remove(self.prompt_history, 1)
-  end
-  self.prompt_history_index = 0
-  self.prompt_history_draft = nil
-end
-
----@param direction integer -1 = older (C-p), 1 = newer (C-n)
-function ChatWidget:nav_history(direction)
-  if not buf_valid(self.input_buf) then
-    return
-  end
-  local total = #self.prompt_history
-  if total == 0 then
-    return
-  end
-  if self.prompt_history_index == 0 and direction == -1 then
-    local current = api.nvim_buf_get_lines(self.input_buf, 0, -1, false)
-    self.prompt_history_draft = table.concat(current, "\n")
-    self.prompt_history_index = total
-  elseif direction == -1 then
-    self.prompt_history_index = math.max(1, self.prompt_history_index - 1)
-  elseif direction == 1 then
-    self.prompt_history_index = self.prompt_history_index + 1
-    if self.prompt_history_index > total then
-      self.prompt_history_index = 0
-      local draft = self.prompt_history_draft or ""
-      api.nvim_buf_set_lines(self.input_buf, 0, -1, false, vim.split(draft, "\n", { plain = true }))
-      self.prompt_history_draft = nil
-      return
-    end
-  end
-  local entry = self.prompt_history[self.prompt_history_index]
-  if entry then
-    api.nvim_buf_set_lines(self.input_buf, 0, -1, false, vim.split(entry, "\n", { plain = true }))
-  end
 end
 
 function ChatWidget:reset()
