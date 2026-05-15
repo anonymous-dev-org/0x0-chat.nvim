@@ -8,13 +8,19 @@ describe("zxz.chat.open", function()
   local agentic_calls
   local orig_loaded_agentic
   local orig_loaded_config
+  local orig_loaded_permission_manager
+  local orig_loaded_sound
+  local sounds
 
   before_each(function()
     repo = helpers.make_repo({ ["a.txt"] = "one\n" })
     vim.fn.chdir(repo)
     agentic_calls = { open = 0 }
+    sounds = {}
     orig_loaded_agentic = package.loaded["agentic"]
     orig_loaded_config = package.loaded["agentic.config"]
+    orig_loaded_permission_manager = package.loaded["agentic.ui.permission_manager"]
+    orig_loaded_sound = package.loaded["zxz.sound"]
     package.loaded["agentic"] = {
       open = function()
         agentic_calls.open = agentic_calls.open + 1
@@ -22,6 +28,17 @@ describe("zxz.chat.open", function()
       end,
     }
     package.loaded["agentic.config"] = { provider = nil, hooks = {} }
+    package.loaded["agentic.ui.permission_manager"] = {
+      add_request = function(_, request, callback)
+        agentic_calls.permission_request = request
+        agentic_calls.permission_callback = callback
+      end,
+    }
+    package.loaded["zxz.sound"] = {
+      play = function(reason)
+        sounds[#sounds + 1] = reason
+      end,
+    }
     Chat._reset_for_tests()
   end)
 
@@ -31,6 +48,8 @@ describe("zxz.chat.open", function()
     end
     package.loaded["agentic"] = orig_loaded_agentic
     package.loaded["agentic.config"] = orig_loaded_config
+    package.loaded["agentic.ui.permission_manager"] = orig_loaded_permission_manager
+    package.loaded["zxz.sound"] = orig_loaded_sound
     Chat._reset_for_tests()
     helpers.cleanup(repo)
   end)
@@ -70,12 +89,38 @@ describe("zxz.chat.open", function()
       success = true,
     })
 
+    assert.same({ "agent_turn", "agent_turn" }, sounds)
+
     local count =
       vim.fn.system({ "git", "-C", wt.path, "rev-list", "--count", wt.base_ref .. "..HEAD" }):gsub("\n$", "")
     assert.equals("2", count)
 
     local status = vim.fn.system({ "git", "-C", wt.path, "status", "--porcelain" })
     assert.equals("", status)
+    pcall(Worktree.remove, wt)
+  end)
+
+  it("plays sounds for agent errors and permission requests", function()
+    local wt = assert(Chat.open())
+    local Config = package.loaded["agentic.config"]
+    assert.is_function(Config.hooks.on_response_complete)
+    assert.is_function(Config.hooks.on_create_session_response)
+
+    Config.hooks.on_response_complete({
+      tab_page_id = vim.api.nvim_get_current_tabpage(),
+      session_id = "s1",
+      success = false,
+      error = { message = "boom" },
+    })
+    Config.hooks.on_create_session_response({
+      tab_page_id = vim.api.nvim_get_current_tabpage(),
+      err = { message = "no session" },
+    })
+
+    local PermissionManager = package.loaded["agentic.ui.permission_manager"]
+    PermissionManager.add_request(PermissionManager, { toolCall = { toolCallId = "tc1" } }, function() end)
+
+    assert.same({ "agent_error", "agent_error", "permission_request" }, sounds)
     pcall(Worktree.remove, wt)
   end)
 

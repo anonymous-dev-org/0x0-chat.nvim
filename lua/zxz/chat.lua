@@ -15,6 +15,9 @@ local M = {}
 local worktrees_by_tab = {}
 local hook_installed = false
 local agentic_patched = false
+local permission_patched = false
+local permission_manager_module
+local permission_add_request_original
 
 ---@param mod_name string
 ---@return any|nil, string?
@@ -26,12 +29,18 @@ local function safe_require(mod_name)
   return mod, nil
 end
 
+---@param reason string
+local function play_sound(reason)
+  require("zxz.sound").play(reason)
+end
+
 ---@param wt zxz.Worktree
 local function commit_turn(wt)
   local ok, err, committed = Worktree.snapshot(wt, {
     message = ("zxz: agent turn %s"):format(os.date("%Y-%m-%d %H:%M:%S")),
   })
   if not ok then
+    play_sound("agent_error")
     vim.notify("zxz.chat: failed to commit agent turn: " .. tostring(err), vim.log.levels.ERROR)
     return
   end
@@ -40,28 +49,71 @@ local function commit_turn(wt)
   end
 end
 
+---@param hook_name string
+---@param user_hook function|nil
+---@param data table
+local function call_user_hook(hook_name, user_hook, data)
+  if not user_hook then
+    return
+  end
+  local ok, err = pcall(user_hook, data)
+  if not ok then
+    play_sound("agent_error")
+    vim.notify(("zxz.chat: agentic %s hook failed: %s"):format(hook_name, tostring(err)), vim.log.levels.WARN)
+  end
+end
+
 ---@param Config table
-local function install_response_hook(Config)
+local function install_agentic_hooks(Config)
   Config.hooks = Config.hooks or {}
   if hook_installed then
     return
   end
 
-  local user_hook = Config.hooks.on_response_complete
+  local user_response_complete = Config.hooks.on_response_complete
   Config.hooks.on_response_complete = function(data)
-    if user_hook then
-      local ok, err = pcall(user_hook, data)
-      if not ok then
-        vim.notify("zxz.chat: agentic on_response_complete hook failed: " .. tostring(err), vim.log.levels.WARN)
-      end
+    call_user_hook("on_response_complete", user_response_complete, data)
+
+    if data and data.success == false then
+      play_sound("agent_error")
+    else
+      play_sound("agent_turn")
     end
 
-    local wt = worktrees_by_tab[data.tab_page_id]
+    local wt = data and worktrees_by_tab[data.tab_page_id]
     if wt then
       commit_turn(wt)
     end
   end
+
+  local user_create_session_response = Config.hooks.on_create_session_response
+  Config.hooks.on_create_session_response = function(data)
+    call_user_hook("on_create_session_response", user_create_session_response, data)
+    if data and data.err then
+      play_sound("agent_error")
+    end
+  end
+
   hook_installed = true
+end
+
+local function install_permission_sound()
+  if permission_patched then
+    return
+  end
+
+  local PermissionManager = safe_require("agentic.ui.permission_manager")
+  if not PermissionManager or type(PermissionManager.add_request) ~= "function" then
+    return
+  end
+
+  permission_manager_module = PermissionManager
+  permission_add_request_original = PermissionManager.add_request
+  PermissionManager.add_request = function(self, request, callback)
+    play_sound("permission_request")
+    return permission_add_request_original(self, request, callback)
+  end
+  permission_patched = true
 end
 
 local function install_agentic_worktree_guard(agentic)
@@ -97,6 +149,7 @@ function M.open(opts)
     return nil, "agentic.nvim is not installed (" .. tostring(rerr) .. ")"
   end
   install_agentic_worktree_guard(agentic)
+  install_permission_sound()
 
   local wt, werr = Worktree.create({ base = opts.base, agent = "agentic" })
   if not wt then
@@ -119,7 +172,7 @@ function M.open(opts)
   local Config = safe_require("agentic.config")
   if Config then
     worktrees_by_tab[vim.api.nvim_get_current_tabpage()] = wt
-    install_response_hook(Config)
+    install_agentic_hooks(Config)
   end
 
   local ok, err = pcall(agentic.open)
@@ -135,6 +188,12 @@ function M._reset_for_tests()
   worktrees_by_tab = {}
   hook_installed = false
   agentic_patched = false
+  if permission_patched and permission_manager_module then
+    permission_manager_module.add_request = permission_add_request_original
+  end
+  permission_patched = false
+  permission_manager_module = nil
+  permission_add_request_original = nil
 end
 
 return M
