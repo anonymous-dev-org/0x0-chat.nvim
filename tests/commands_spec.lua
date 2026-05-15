@@ -5,35 +5,45 @@ local Agents = require("zxz.agents")
 local Worktree = require("zxz.worktree")
 
 describe("zxz.commands.setup", function()
+  local DEFAULT_CMDS = {
+    "ZxzStart",
+    "ZxzReview",
+    "ZxzList",
+    "ZxzCleanup",
+    "ZxzEdit",
+    "ZxzContext",
+  }
+
   before_each(function()
     -- Wipe any previously registered commands so the suite is order-independent.
-    for _, name in ipairs({
-      "ZxzWtStart",
-      "ZxzWtReview",
-      "ZxzWtList",
-      "ZxzWtCleanup",
-    }) do
+    for _, name in ipairs(DEFAULT_CMDS) do
       pcall(vim.api.nvim_del_user_command, name)
     end
   end)
 
-  it("registers the worktree commands under the default prefix", function()
+  it("registers the agent commands under the default prefix", function()
     Commands.setup({ install_keymaps = false })
     local cmds = vim.api.nvim_get_commands({})
-    assert.is_not_nil(cmds.ZxzWtStart)
-    assert.is_not_nil(cmds.ZxzWtReview)
-    assert.is_not_nil(cmds.ZxzWtList)
-    assert.is_not_nil(cmds.ZxzWtCleanup)
+    for _, name in ipairs(DEFAULT_CMDS) do
+      assert.is_not_nil(cmds[name], "missing :" .. name)
+    end
   end)
 
   it("honours a custom command_prefix", function()
     Commands.setup({ command_prefix = "Foo", install_keymaps = false })
     local cmds = vim.api.nvim_get_commands({})
     assert.is_not_nil(cmds.FooStart)
-    pcall(vim.api.nvim_del_user_command, "FooStart")
-    pcall(vim.api.nvim_del_user_command, "FooReview")
-    pcall(vim.api.nvim_del_user_command, "FooList")
-    pcall(vim.api.nvim_del_user_command, "FooCleanup")
+    assert.is_not_nil(cmds.FooContext)
+    for _, n in ipairs({
+      "FooStart",
+      "FooReview",
+      "FooList",
+      "FooCleanup",
+      "FooEdit",
+      "FooContext",
+    }) do
+      pcall(vim.api.nvim_del_user_command, n)
+    end
   end)
 end)
 

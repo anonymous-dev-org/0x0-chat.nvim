@@ -107,19 +107,46 @@ end
 ---@param opts? { command_prefix?: string, keymap_prefix?: string, install_keymaps?: boolean }
 function M.setup(opts)
   opts = opts or {}
-  local cp = opts.command_prefix or "ZxzWt"
+  local cp = opts.command_prefix or "Zxz"
   local function cmd(name, fn, copts)
     vim.api.nvim_create_user_command(cp .. name, fn, copts or {})
   end
 
   cmd("Start", function(c)
-    M.start({ agent = c.args ~= "" and c.args or nil })
+    -- :ZxzStart [agent] [path...]
+    -- First token: agent name (must match a registered agent); rest: paths
+    -- to chansend after the term opens.
+    local agent, with = nil, nil
+    if c.fargs and #c.fargs > 0 then
+      local first = c.fargs[1]
+      if Agents.get(first) then
+        agent = first
+        if #c.fargs > 1 then
+          with = { unpack(c.fargs, 2) }
+        end
+      else
+        with = c.fargs
+      end
+    end
+    M.start({ agent = agent, with = with })
   end, {
-    nargs = "?",
-    complete = function()
-      return Agents.names()
+    nargs = "*",
+    complete = function(arglead, cmdline, _)
+      -- Complete agent names for the first positional arg, file paths after.
+      local before = cmdline:sub(1, #cmdline - #arglead)
+      local _, n = before:gsub("%S+", "")
+      if n <= 1 then
+        local out = {}
+        for _, name in ipairs(Agents.names()) do
+          if name:sub(1, #arglead) == arglead then
+            table.insert(out, name)
+          end
+        end
+        return out
+      end
+      return vim.fn.getcompletion(arglead, "file")
     end,
-    desc = "zxz: spawn agent CLI in a fresh worktree",
+    desc = "zxz: spawn agent CLI in a fresh worktree (optional paths seed context)",
   })
   cmd("Review", function()
     M.review()
@@ -149,6 +176,22 @@ function M.setup(opts)
     range = true,
     nargs = "*",
     desc = "zxz: one-shot inline edit via agent CLI",
+  })
+  cmd("Context", function(c)
+    -- :ZxzContext path... -> chansend `@a @b @c` directly.
+    -- :ZxzContext         -> open vim.ui.select over open buffers.
+    if c.fargs and #c.fargs > 0 then
+      local ok, err = Share.send_paths(c.fargs)
+      if not ok then
+        vim.notify("zxz: " .. tostring(err), vim.log.levels.WARN)
+      end
+    else
+      Share.pick_buffers()
+    end
+  end, {
+    nargs = "*",
+    complete = "file",
+    desc = "zxz: push paths to the active agent term (no args: picker)",
   })
 
   if opts.install_keymaps ~= false then

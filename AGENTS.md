@@ -41,14 +41,14 @@ push back: the answer is "use the agent's terminal".
 - **`base_ref` is pinned at creation** to a concrete SHA. Diffs are always
   taken against that SHA, never `HEAD`. **Why:** the user's `main` (or whatever
   branch they're on) can advance while the agent works — for example via
-  another `:ZxzWtCleanup --merged`, an unrelated commit, or a rebase. The
+  another `:ZxzCleanup --merged`, an unrelated commit, or a rebase. The
   review buffer must continue to show "what the agent proposed" relative to
   the worktree state at start time, regardless of those later moves.
 - **`repo` is always canonicalised** through `vim.fn.resolve` so callers from
   inside a worktree (where macOS symlinks `/var ↔ /private/var` would
   otherwise produce different strings) compare equal to callers from the main
   worktree. **Why:** tests broke on this exact symlink mismatch.
-- **No auto-cleanup.** `:ZxzWtCleanup` is explicit; `:ZxzWtCleanup!` removes
+- **No auto-cleanup.** `:ZxzCleanup` is explicit; `:ZxzCleanup!` removes
   even live worktrees. Worktrees survive nvim restart — they're just git
   state. **Why:** the user chose this; agent branches are often the only
   record of what happened in a session.
@@ -90,7 +90,7 @@ commits.
 `lua/zxz/terminal.lua`.
 
 - **One subprocess per `Terminal.start` call.** No reuse, no pooling. Two
-  `:ZxzWtStart claude` calls spawn two processes in two worktrees.
+  `:ZxzStart claude` calls spawn two processes in two worktrees.
 - **`job_id` discipline.** The job channel is the *only* way we feed input to
   the agent. Never write to the terminal buffer to "type into" the agent —
   use `Terminal.send(term, text)` which `chansend`s. **Why:** typing into a
@@ -192,7 +192,7 @@ commit per `cc` invocation.
 
 `lua/zxz/edit/inline_edit.lua` + `inline_diff.lua`.
 
-- **One-shot only.** No conversation, no follow-up. The user runs `:ZxzWtEdit`
+- **One-shot only.** No conversation, no follow-up. The user runs `:ZxzEdit`
   with optional inline instruction, the agent CLI runs in headless mode
   (`headless_cmd` per agent, defaults to `cmd` if not declared), and the
   output is rendered as an inline diff overlay.
