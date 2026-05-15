@@ -38,12 +38,10 @@ push back: the answer is "use the agent's terminal".
 `lua/zxz/worktree.lua`. **One worktree per agent invocation**, never reused.
 
 - **Layout:** `<repo>/.git/zxz/wt-<id>/` on branch `zxz/agent-<id>`.
-- **`base_ref` is pinned at creation** to a concrete SHA. Diffs are always
-  taken against that SHA, never `HEAD`. **Why:** the user's `main` (or whatever
-  branch they're on) can advance while the agent works — for example via
-  another `:ZxzCleanup --merged`, an unrelated commit, or a rebase. The
-  review buffer must continue to show "what the agent proposed" relative to
-  the worktree state at start time, regardless of those later moves.
+- **`base_ref` is pinned at creation** to a concrete SHA. **Why:** the user's
+  `main` (or whatever branch they're on) can advance while the agent works.
+  Pinning means we can always trace what state the agent forked from, even
+  weeks later when the surrounding history has moved on.
 - **`repo` is always canonicalised** through `vim.fn.resolve` so callers from
   inside a worktree (where macOS symlinks `/var ↔ /private/var` would
   otherwise produce different strings) compare equal to callers from the main
@@ -52,36 +50,6 @@ push back: the answer is "use the agent's terminal".
   even live worktrees. Worktrees survive nvim restart — they're just git
   state. **Why:** the user chose this; agent branches are often the only
   record of what happened in a session.
-
-### Diff orientation (load-bearing — read carefully)
-
-`Worktree.pending_diff(wt)` returns `git diff <branch>` from the main
-worktree. That diff is oriented **branch → worktree**:
-
-- `+` lines come from the worktree (user's current content)
-- `-` lines come from the branch (agent's proposed content)
-
-To "accept" the agent's version into the worktree, callers apply this patch
-with `{ reverse = true }`. The review buffer's UI section labels are
-inverted (`UI_LABEL` in `review.lua`) so the user sees "Added (by agent)"
-where the raw diff status is `deleted` (worktree-POV).
-
-**FORBIDDEN: `git diff -R <branch>`.** The `-R` form produces non-standard
-`b/... a/...` headers that our parser does not handle, and `git apply` has
-edge cases with reversed prefixes. The orientation is encoded in apply
-direction, not in the diff itself. **Why:** discovered while wiring the
-review buffer; the `-R` form silently broke `apply_patch` because the parser
-couldn't extract paths.
-
-### Post-accept staging
-
-Every `apply_patch` in the review buffer is followed by
-`git add -A -- <path>`. **Why:** `git diff <branch>` from the main worktree
-ignores untracked files. After accepting an "added" file, the file physically
-exists in the worktree but is untracked, so the next `pending_diff` still
-shows it as missing. Staging via `git add -A` makes git treat the file as
-"now matches the branch", and the accumulated index is exactly what `:cc`
-commits.
 
 ---
 
@@ -128,63 +96,33 @@ user's vocabulary — do not change without coordinating with the user):
 
 ---
 
-## 5. Review buffer
+## 5. Review (hand off to the user's git UI)
 
-`lua/zxz/review.lua`. Reads `pending_diff(wt)`, groups files into sections,
-applies hunks via the Fugitive splice trick.
+`lua/zxz/review.lua` is ~50 lines and intentionally not a UI of its own.
 
-### Sections
+`:ZxzReview` runs `git merge --no-ff --no-commit <agent-branch>` in the
+user's main worktree, then opens whichever git UI is loaded — Neogit first,
+fugitive's `:Git` second, or notifies the user if neither is present.
 
-| Section | Bucket key | Meaning |
-|---|---|---|
-| Conflicts | `conflicts` | User has locally diverged from `base_ref` on a path the agent also modified |
-| Modified  | `modified`  | Agent modified a tracked file |
-| Added     | `deleted`*  | Agent added a new file (worktree-POV: file is "deleted" because it's only on the branch) |
-| Deleted   | `added`*    | Agent deleted a file (worktree-POV: file is "added" in our direction because the branch lacks it) |
+After that, all per-hunk staging, commit-message editing, conflict resolution
+and merge abort happens through whatever the user already knows how to use:
 
-\* the bucket key is the parser's status; the UI label is the inverted
-agent-facing meaning. The mapping is `UI_LABEL` in `review.lua`. **Why:** the
-diff is branch→worktree; without the inversion the labels would read
-backwards from the user's perspective.
+- **Neogit**: `s` / `u` to stage/unstage, `cc` to commit, `M` for merge ops.
+- **fugitive**: `s` / `u` / `cc`, `dv` for 3-way diff, `:Git merge --abort`.
+- **shell fallback**: standard `git status`, `git add -p`, `git commit`,
+  `git merge --abort`.
 
-### Conflict detection
+The previous incarnation of this module was a ~660-line bespoke status buffer
+that reimplemented (badly) what those plugins have polished for years —
+worse rename detection, no real conflict-marker workflow, no integration
+with mergetool/diffview, foreign keymap vocabulary. **FORBIDDEN: re-adding
+the bespoke review buffer.** Use the right tool.
 
-`detect_conflict` runs `git diff --quiet <base_ref> -- <path>` from the main
-worktree. Exit 1 = local divergence on that file = conflict. **FORBIDDEN:
-relying on `git apply --check` for conflict detection.** **Why:** the diff is
-generated from the current worktree, so a reverse-apply check always
-succeeds — it's tautological, not informative. The only meaningful conflict
-signal is "user has uncommitted/committed work on this path since the agent
-started".
-
-A conflicted file refuses `s` and `X` until the user resolves it via `dv`
-(3-way diff). They can then write the buffer and the next refresh moves the
-file back into the regular sections.
-
-### Patch reassembly
-
-`build_hunk_patch` and `build_file_patch` reassemble single-hunk and whole-
-file patches from parsed records. **FORBIDDEN: feeding the parser's body
-lines through `table.concat` without filtering.** Hunk body lines must start
-with one of `' '`, `'+'`, `'-'`, `'\'`. Anything else (typically the
-trailing empty line from the diff's terminating newline) corrupts the patch
-and causes `git apply` to fail silently. The parser drops such lines.
-**Why:** lost 30 min on this in Phase 4; tests `parse_diff` and `accepting a
-hunk lands the agent's change` pin the fix.
-
-### Section-header `s`
-
-Pressing `s` on a section header accepts every non-conflict file in that
-section in one shot, sequentially. Conflicted files are skipped without
-notify (the user can target them individually).
-
-### Commit step
-
-`cc` collects `state.touched` (files the user has applied at least one hunk
-or whole-file accept on), prompts for a commit message defaulting to
-`zxz: accept from <branch>`, runs `git -C <repo> add -A -- <files>` (idempotent
-with the per-accept staging), then `git commit -m <msg> -- <files>`. A single
-commit per `cc` invocation.
+The merge state is a real git merge: `MERGE_HEAD` is set, the agent's
+branch shows up as a real parent on commit, conflicts surface as real
+conflict markers. The agent worktree itself is unchanged by `:ZxzReview`
+and remains available for further iteration; `:ZxzCleanup` retires it
+when the user is done.
 
 ---
 
@@ -251,8 +189,8 @@ Currently pinned regression tests:
 |---|---|
 | Worktree path canonicalisation | `worktree_spec.lua::"resolves repo_root from inside an agent worktree"` |
 | Three-dot diff is base-vs-branch | `worktree_spec.lua::"diff reports changes made on the agent branch"` |
-| Patch body filter (no trailing empties) | `zxz_review_spec.lua::"accepting a hunk (reverse-apply) lands the agent's change"` |
-| Conflict detection uses base_ref diff | `zxz_review_spec.lua::"conflict is detected when the user's worktree edits the same line"` |
+| Review uses no-ff no-commit merge | `zxz_review_spec.lua::"stages the agent branch via git merge --no-ff --no-commit"` |
+| Conflict path leaves index populated | `zxz_review_spec.lua::"survives a merge with conflicts ..."` |
 | Hunk row shift after accept | `inline_diff_spec.lua::"ga ... lands new lines and shifts subsequent hunks"` |
 | chansend orientation | `context_share_spec.lua::"send_path chansends @<file> with newline"` |
 | Resolved cwd-stripping | `context_share_spec.lua::"send_paths joins multiple @refs into one chansend"` |

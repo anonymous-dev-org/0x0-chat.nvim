@@ -6,8 +6,6 @@
 ---@field repo string            -- absolute path to the main worktree (where the user works)
 ---@field agent? string          -- optional agent label (claude, codex, ...)
 
-local uv = vim.uv or vim.loop
-
 local M = {}
 
 local function run(cmd, opts)
@@ -167,99 +165,6 @@ function M.diff(wt)
     return "", err
   end
   return out or "", nil
-end
-
----Diff of the user's working tree against the agent branch tip. This is what
----the review buffer shows: lines prefixed `+` come from the branch (agent's
----proposal), `-` from the worktree. Applying this diff forward lands the
----branch's changes in the worktree.
----@param wt zxz.Worktree
----@return string diff "" if no differences
----@return string? err
-function M.pending_diff(wt)
-  -- Orientation note: `git diff <branch>` from the main worktree produces a
-  -- patch describing "branch -> worktree". `+` lines are the worktree's
-  -- (user's) content; `-` lines are the branch's (agent's). To "accept" the
-  -- agent's version into the worktree, callers apply this patch with
-  -- `{ reverse = true }` (which transforms worktree -> branch).
-  --
-  -- We keep the diff in this form because git's patch parsers (including our
-  -- own and `git apply` itself) handle it cleanly; the `-R` form swaps the
-  -- `a/` and `b/` prefixes and is more awkward to parse.
-  local out, err = run({
-    "git",
-    "-C",
-    wt.repo,
-    "diff",
-    "--no-color",
-    "--no-ext-diff",
-    wt.branch,
-  })
-  if err then
-    return "", err
-  end
-  return out or "", nil
-end
-
----Apply a patch to the user's worktree (typically a single hunk with header).
----@param wt zxz.Worktree
----@param patch string raw patch text including diff header
----@param opts? { reverse?: boolean, cwd?: string, check?: boolean }
----@return boolean ok
----@return string? err
-function M.apply_patch(wt, patch, opts)
-  opts = opts or {}
-  local cwd = opts.cwd or wt.repo
-  local tmp = vim.fn.tempname() .. ".patch"
-  local f = assert(io.open(tmp, "wb"))
-  f:write(patch)
-  f:close()
-  local cmd = { "git", "-C", cwd, "apply", "--recount" }
-  if opts.reverse then
-    table.insert(cmd, "--reverse")
-  end
-  if opts.check then
-    table.insert(cmd, "--check")
-  end
-  table.insert(cmd, tmp)
-  local _, err = run(cmd, { silent = true })
-  if uv then
-    uv.fs_unlink(tmp)
-  else
-    os.remove(tmp)
-  end
-  if err then
-    return false, err
-  end
-  return true, nil
-end
-
----Checkout a path from the agent branch into the user's worktree (accept whole file).
----@param wt zxz.Worktree
----@param path string relative to repo root
----@param opts? { cwd?: string }
----@return boolean ok
----@return string? err
-function M.checkout_file(wt, path, opts)
-  opts = opts or {}
-  local cwd = opts.cwd or wt.repo
-  local _, err = run({ "git", "-C", cwd, "checkout", wt.branch, "--", path })
-  if err then
-    return false, err
-  end
-  return true, nil
-end
-
----Show the content of a path on the agent branch (for 3-way diff scratch buffers).
----@param wt zxz.Worktree
----@param path string relative
----@return string|nil content nil if path absent on that branch
-function M.show_file(wt, path)
-  local out, err = run({ "git", "-C", wt.repo, "show", wt.branch .. ":" .. path }, { silent = true })
-  if err then
-    return nil
-  end
-  return out
 end
 
 return M
