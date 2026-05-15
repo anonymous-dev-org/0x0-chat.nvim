@@ -9,10 +9,28 @@ end
 
 describe("zxz.review.open", function()
   local repo, wt
+  local diff_calls
+
+  local function stub_fugitive()
+    diff_calls = {}
+    pcall(vim.api.nvim_del_user_command, "Gvdiffsplit")
+    vim.api.nvim_create_user_command("Gvdiffsplit", function(opts)
+      diff_calls[#diff_calls + 1] = {
+        bang = opts.bang,
+        args = opts.args,
+      }
+      vim.cmd("vsplit")
+      local buf = vim.api.nvim_create_buf(false, true)
+      vim.api.nvim_win_set_buf(0, buf)
+      vim.bo[buf].buftype = "nofile"
+      vim.bo[buf].filetype = "fugitive"
+    end, { nargs = "*", bang = true })
+  end
 
   before_each(function()
     repo = helpers.make_repo({ ["a.txt"] = "one\n" })
     vim.fn.chdir(repo)
+    stub_fugitive()
     wt = assert(Worktree.create({ cwd = repo }))
     helpers.write_file(wt.path .. "/a.txt", "one\ntwo\n")
     run({ "git", "-C", wt.path, "add", "-A" })
@@ -20,10 +38,14 @@ describe("zxz.review.open", function()
   end)
 
   after_each(function()
+    while vim.fn.tabpagenr("$") > 1 do
+      pcall(vim.cmd, "tabclose")
+    end
     -- Reset any in-progress merge so the after-each Worktree.remove succeeds.
     pcall(vim.fn.system, { "git", "-C", repo, "merge", "--abort" })
     pcall(vim.api.nvim_del_user_command, "Git")
     pcall(vim.api.nvim_del_user_command, "Neogit")
+    pcall(vim.api.nvim_del_user_command, "Gvdiffsplit")
     if wt then
       pcall(Worktree.remove, wt)
       wt = nil
@@ -65,18 +87,34 @@ describe("zxz.review.open", function()
     assert.equals(128, vim.v.shell_error)
   end)
 
-  it("opens fugitive when both supported git UIs are available", function()
-    local opened
-    vim.api.nvim_create_user_command("Git", function()
-      opened = "Git"
-    end, {})
-    vim.api.nvim_create_user_command("Neogit", function()
-      opened = "Neogit"
-    end, {})
+  it("opens a full review tab with file list and fugitive diff splits", function()
+    local tabs_before = vim.fn.tabpagenr("$")
 
     Review.open({ worktree = wt })
 
-    assert.equals("Git", opened)
+    assert.equals(tabs_before + 1, vim.fn.tabpagenr("$"))
+    assert.equals(1, #diff_calls)
+    assert.equals("HEAD", diff_calls[1].args)
+
+    local list_win
+    for _, win in ipairs(vim.api.nvim_tabpage_list_wins(0)) do
+      local buf = vim.api.nvim_win_get_buf(win)
+      if vim.bo[buf].filetype == "zxzreview" then
+        list_win = win
+        break
+      end
+    end
+    assert.is_not_nil(list_win)
+
+    vim.api.nvim_set_current_win(list_win)
+    local lines = vim.api.nvim_buf_get_lines(0, 0, -1, false)
+    assert.truthy(table.concat(lines, "\n"):match("a%.txt"))
+    assert.is_true(#vim.api.nvim_tabpage_list_wins(0) >= 3)
+
+    local close_map = vim.fn.maparg("q", "n", false, true)
+    assert.equals(1, close_map.buffer)
+    close_map.callback()
+    assert.equals(tabs_before, vim.fn.tabpagenr("$"))
   end)
 
   it("notifies when there is no active term AND no worktrees to review", function()

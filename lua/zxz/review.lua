@@ -1,15 +1,11 @@
----Hand off review of the agent's worktree to the user's git UI.
+---Review the agent's worktree through the user's git UI.
 ---
 ---We run `git merge --no-ff --no-commit <agent-branch>` in the user's main
 ---worktree. That stages every committed turn from the agent branch as a real
 ---git merge state — index populated, MERGE_HEAD set, conflict markers inserted
----where needed — and then we open fugitive (or Neogit) for the per-hunk
----staging / commit / abort flow.
----
----This deletes ~660 lines of bespoke review buffer. We were reinventing
----staging UIs that those plugins have already polished for years, badly:
----missing rename detection, no real conflict-marker workflow, no integration
----with diffview / merge tools, no familiar keymaps. Use the right tool.
+---where needed — and then we open a dedicated full-tab Fugitive review layout:
+---changed files on the left, side-by-side diff for the selected file on the
+---right.
 ---
 ---Aborting: `:Git merge --abort` (fugitive) or the Neogit equivalent, or
 ---`git merge --abort` from any shell. We don't wrap that either; it's one
@@ -18,6 +14,10 @@
 local Worktree = require("zxz.worktree")
 
 local M = {}
+
+---@class zxz.review.File
+---@field status string
+---@field path string
 
 ---@param wt zxz.Worktree
 ---@return boolean ok
@@ -45,14 +45,156 @@ local function stage_branch(wt)
   return true, nil
 end
 
-local function open_git_ui()
-  for _, cmd in ipairs({ "Git", "Neogit" }) do
-    if vim.fn.exists(":" .. cmd) == 2 then
-      vim.cmd(cmd)
-      return true
+---@param repo string
+---@return zxz.review.File[]? files
+---@return string? err
+local function changed_files(repo)
+  local lines = vim.fn.systemlist({
+    "git",
+    "-C",
+    repo,
+    "status",
+    "--porcelain=v1",
+  })
+  if vim.v.shell_error ~= 0 then
+    return nil, table.concat(lines, "\n")
+  end
+
+  local files = {}
+  for _, line in ipairs(lines) do
+    local status = line:sub(1, 2)
+    local path = line:sub(4):gsub("^.* %-> ", "")
+    if status ~= "??" and path ~= "" then
+      files[#files + 1] = { status = status, path = path }
     end
   end
-  return false
+  return files, nil
+end
+
+---@param buf integer
+---@param state table
+local function map_close(buf, state)
+  vim.keymap.set("n", "q", function()
+    if vim.api.nvim_tabpage_is_valid(state.tab) then
+      vim.api.nvim_set_current_tabpage(state.tab)
+      vim.cmd("tabclose")
+    end
+  end, { buffer = buf, nowait = true, silent = true, desc = "Close zxz review" })
+end
+
+---@param state table
+local function close_diff_windows(state)
+  if not vim.api.nvim_tabpage_is_valid(state.tab) then
+    return
+  end
+  for _, win in ipairs(vim.api.nvim_tabpage_list_wins(state.tab)) do
+    if win ~= state.list_win and vim.api.nvim_win_is_valid(win) then
+      pcall(vim.api.nvim_win_close, win, true)
+    end
+  end
+end
+
+---@param state table
+---@param file zxz.review.File
+local function open_file_diff(state, file)
+  if not file then
+    return
+  end
+
+  vim.api.nvim_set_current_tabpage(state.tab)
+  close_diff_windows(state)
+  vim.api.nvim_set_current_win(state.list_win)
+  vim.cmd("rightbelow vertical new")
+  local file_win = vim.api.nvim_get_current_win()
+  local abs = state.repo .. "/" .. file.path
+  vim.cmd("noswapfile edit " .. vim.fn.fnameescape(abs))
+  map_close(vim.api.nvim_get_current_buf(), state)
+
+  local diff_cmd = file.status:match("U") and "Gvdiffsplit!" or "Gvdiffsplit HEAD"
+  local ok = pcall(vim.cmd, diff_cmd)
+  if not ok then
+    pcall(vim.cmd, "Gvdiffsplit")
+  end
+
+  for _, win in ipairs(vim.api.nvim_tabpage_list_wins(state.tab)) do
+    local buf = vim.api.nvim_win_get_buf(win)
+    map_close(buf, state)
+  end
+  vim.api.nvim_set_current_win(file_win)
+end
+
+---@param state table
+local function select_current_file(state)
+  local row = vim.api.nvim_win_get_cursor(state.list_win)[1] - state.header_lines
+  open_file_diff(state, state.files[row])
+end
+
+---@param repo string
+---@param wt zxz.Worktree
+---@return boolean ok
+---@return string? err
+local function open_review_tab(repo, wt)
+  if vim.fn.exists(":Gvdiffsplit") ~= 2 then
+    return false, "vim-fugitive is required for the review diff layout"
+  end
+
+  local files, err = changed_files(repo)
+  if not files then
+    return false, err
+  end
+
+  vim.cmd("tabnew")
+  vim.cmd("lcd " .. vim.fn.fnameescape(repo))
+  local state = {
+    repo = repo,
+    worktree = wt,
+    files = files,
+    header_lines = 4,
+    tab = vim.api.nvim_get_current_tabpage(),
+    list_win = vim.api.nvim_get_current_win(),
+  }
+
+  local buf = vim.api.nvim_create_buf(false, true)
+  vim.api.nvim_win_set_buf(state.list_win, buf)
+  vim.bo[buf].buftype = "nofile"
+  vim.bo[buf].bufhidden = "wipe"
+  vim.bo[buf].filetype = "zxzreview"
+  vim.bo[buf].modifiable = true
+
+  local lines = {
+    "0x0 Review",
+    wt.branch .. " -> " .. repo,
+    "q close  <CR> diff file",
+    "",
+  }
+  for _, file in ipairs(files) do
+    lines[#lines + 1] = ("%s  %s"):format(file.status, file.path)
+  end
+  if #files == 0 then
+    lines[#lines + 1] = "No changed files"
+  end
+  vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
+  vim.bo[buf].modifiable = false
+  vim.wo[state.list_win].number = false
+  vim.wo[state.list_win].relativenumber = false
+  vim.wo[state.list_win].signcolumn = "no"
+  vim.wo[state.list_win].wrap = false
+  vim.api.nvim_win_set_width(state.list_win, 36)
+
+  map_close(buf, state)
+  vim.keymap.set("n", "<CR>", function()
+    select_current_file(state)
+  end, { buffer = buf, nowait = true, silent = true, desc = "Open zxz review diff" })
+  vim.keymap.set("n", "o", function()
+    select_current_file(state)
+  end, { buffer = buf, nowait = true, silent = true, desc = "Open zxz review diff" })
+
+  if #files > 0 then
+    vim.api.nvim_win_set_cursor(state.list_win, { state.header_lines + 1, 0 })
+    open_file_diff(state, files[1])
+  end
+
+  return true, nil
 end
 
 ---Pick a worktree to review. Prompts via `vim.ui.select` over live agent
@@ -114,13 +256,9 @@ function M._open_for(wt)
     return
   end
 
-  if not open_git_ui() then
-    vim.notify(
-      "zxz.review: agent changes staged. Install Neogit or vim-fugitive "
-        .. "to review, or run `git status` from the shell. Abort with "
-        .. "`git merge --abort`.",
-      vim.log.levels.INFO
-    )
+  ok, err = open_review_tab(wt.repo, wt)
+  if not ok then
+    vim.notify("zxz.review: agent changes staged, but review UI failed: " .. tostring(err), vim.log.levels.ERROR)
   end
 end
 
