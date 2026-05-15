@@ -40,17 +40,20 @@ describe("zxz.review.open", function()
     assert.equals("one\ntwo", staged)
   end)
 
-  it("reports an error when there is no active term and no explicit wt", function()
+  it("notifies when there is no active term AND no worktrees to review", function()
+    -- Drop the before_each-created wt so Worktree.list() returns empty.
+    pcall(Worktree.remove, wt)
+    wt = nil
     local notifications = {}
     local orig = vim.notify
     vim.notify = function(msg, lvl)
       table.insert(notifications, { msg = msg, lvl = lvl })
     end
-    Review.open() -- no worktree, no active term
+    Review.open() -- no explicit wt, no active term, no listable worktrees
     vim.notify = orig
     local saw = false
     for _, n in ipairs(notifications) do
-      if n.msg:match("no active agent terminal") then
+      if n.msg:match("no agent worktrees") then
         saw = true
       end
     end

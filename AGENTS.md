@@ -9,27 +9,36 @@ failure mode.
 
 ## 1. What this plugin is (and is not)
 
-0x0.nvim ships **two independent products**:
+0x0.nvim is a **workflow plugin** that wraps two existing agent surfaces in
+a worktree-per-session discipline:
 
 1. **Inline ghost-text completion** — `lua/zxz/complete/`, driven by ACP over
-   stdio. This product still uses the ACP client because completion needs a
-   long-lived streaming session.
+   stdio. Long-lived streaming session.
 2. **Agent-in-a-worktree workflow** — `lua/zxz/{worktree,terminal,review,
-   context_share,commands,edit/}.lua`. The plugin spawns an agent CLI in a
-   `:terminal` window inside a dedicated git worktree, lets the user push
-   buffer context into that terminal's stdin, and reviews the resulting diff
-   with Fugitive-style keymaps.
+   chat,context_share,commands,edit/}.lua`. Two front-ends share the same
+   worktree+review backend:
+   - **`:ZxzStart`** spawns an agent CLI in a `:terminal` window inside a
+     dedicated git worktree (the terminal IS the chat for CLI agents).
+   - **`:ZxzChat [provider]`** delegates to `agentic.nvim` inside a dedicated
+     git worktree — a new tabpage is opened, tab-local cwd is `tcd`'d to the
+     worktree, then `require("agentic").open()` is called. Agentic is
+     per-tabpage and uses cwd at ACP session creation, so chat sessions are
+     pinned to their worktree.
+   - **`:ZxzReview`** reviews any agent worktree (terminal or chat). If a
+     terminal is active in the current buffer, it picks that one; otherwise
+     it lists every `zxz/agent-*` worktree via `vim.ui.select` and merges the
+     picked branch via `git merge --no-ff --no-commit` into the user's main
+     worktree, then hands off to Neogit/fugitive.
 
-What was deleted in the terminal+worktree refactor (do **not** re-add without
-discussion):
+We **depend on, not fork**, agentic.nvim. Its rich chat UI / session manager
+/ permissions / restore live in that plugin; 0x0.nvim only provides the
+worktree shell and the review handoff. If a feature request smells like
+"build a better chat UI", push back: the answer is "fix it in agentic.nvim
+upstream, or open `:ZxzChat` and use what's there".
 
-- Chat UI (`zxz/chat/*`), the chat-side ACP client wiring (sessions, runs,
-  permissions, persistence, queue, run-review), the context picker, the
-  edit-action palette (verbs, code-actions, ledger). The agent CLI itself
-  owns those surfaces now inside its terminal.
-
-If a feature request smells like "add a chat panel" or "add a runs registry",
-push back: the answer is "use the agent's terminal".
+Forbidden: re-adding a 0x0-owned chat panel, ACP session manager, or
+permission ledger. That layer was deleted; agentic.nvim is the source of
+truth for chat.
 
 ---
 
@@ -98,11 +107,15 @@ user's vocabulary — do not change without coordinating with the user):
 
 ## 5. Review (hand off to the user's git UI)
 
-`lua/zxz/review.lua` is ~50 lines and intentionally not a UI of its own.
+`lua/zxz/review.lua` is intentionally not a UI of its own.
 
-`:ZxzReview` runs `git merge --no-ff --no-commit <agent-branch>` in the
-user's main worktree, then opens whichever git UI is loaded — Neogit first,
-fugitive's `:Git` second, or notifies the user if neither is present.
+`:ZxzReview` picks a worktree (current terminal's, or `vim.ui.select` over
+`Worktree.list()` when multiple `zxz/agent-*` worktrees exist — terminal
+sessions and chat sessions are in the same list because they live in the
+same branch namespace), then runs `git merge --no-ff --no-commit
+<agent-branch>` in the user's main worktree and opens whichever git UI is
+loaded — Neogit first, fugitive's `:Git` second, or notifies the user if
+neither is present.
 
 After that, all per-hunk staging, commit-message editing, conflict resolution
 and merge abort happens through whatever the user already knows how to use:
@@ -191,6 +204,8 @@ Currently pinned regression tests:
 | Three-dot diff is base-vs-branch | `worktree_spec.lua::"diff reports changes made on the agent branch"` |
 | Review uses no-ff no-commit merge | `zxz_review_spec.lua::"stages the agent branch via git merge --no-ff --no-commit"` |
 | Conflict path leaves index populated | `zxz_review_spec.lua::"survives a merge with conflicts ..."` |
+| Review picker over multiple worktrees | `zxz_chat_spec.lua::"pick() invokes vim.ui.select when multiple worktrees exist"` |
+| Chat opens agentic with worktree cwd | `zxz_chat_spec.lua::"creates a worktree and opens agentic with the worktree as cwd"` |
 | Hunk row shift after accept | `inline_diff_spec.lua::"ga ... lands new lines and shifts subsequent hunks"` |
 | chansend orientation | `context_share_spec.lua::"send_path chansends @<file> with newline"` |
 | Resolved cwd-stripping | `context_share_spec.lua::"send_paths joins multiple @refs into one chansend"` |

@@ -16,6 +16,7 @@
 ---typed command and lives in the user's git vocabulary.
 
 local Terminal = require("zxz.terminal")
+local Worktree = require("zxz.worktree")
 
 local M = {}
 
@@ -55,23 +56,51 @@ local function open_git_ui()
   return false
 end
 
----Stage the active agent worktree's branch into the user's main worktree and
+---Pick a worktree to review. Picks the current terminal's worktree when one
+---exists; otherwise prompts via `vim.ui.select` over all live agent worktrees
+---(spawned by :ZxzStart or :ZxzChat). Calls `cb(wt)` with the choice, or
+---nothing if the user cancelled / nothing to review.
+---@param cb fun(wt: zxz.Worktree)
+function M.pick(cb)
+  local term = Terminal.current()
+  if term then
+    return cb(term.worktree)
+  end
+  local wts = Worktree.list()
+  if #wts == 0 then
+    vim.notify("zxz.review: no agent worktrees — :ZxzStart or :ZxzChat first", vim.log.levels.WARN)
+    return
+  end
+  if #wts == 1 then
+    return cb(wts[1])
+  end
+  vim.ui.select(wts, {
+    prompt = "Review which agent worktree?",
+    format_item = function(wt)
+      return wt.branch .. "  -  " .. wt.path
+    end,
+  }, function(choice)
+    if choice then
+      cb(choice)
+    end
+  end)
+end
+
+---Stage the chosen agent worktree's branch into the user's main worktree and
 ---hand control to their git UI for review.
 ---@param opts? { worktree?: zxz.Worktree }
 function M.open(opts)
   opts = opts or {}
-  local wt
   if opts.worktree then
-    wt = opts.worktree
-  else
-    local term = Terminal.current()
-    if not term then
-      vim.notify("zxz.review: no active agent terminal — :ZxzStart first", vim.log.levels.WARN)
-      return
-    end
-    wt = term.worktree
+    return M._open_for(opts.worktree)
   end
+  M.pick(function(wt)
+    M._open_for(wt)
+  end)
+end
 
+---@param wt zxz.Worktree
+function M._open_for(wt)
   local ok, err = stage_branch(wt)
   if not ok then
     vim.notify("zxz.review: " .. tostring(err), vim.log.levels.ERROR)

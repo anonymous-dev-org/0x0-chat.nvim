@@ -3,6 +3,7 @@
 ---demolition will pull this into `zxz.init` and drop the `Wt` prefix.
 
 local Agents = require("zxz.agents")
+local Chat = require("zxz.chat")
 local Terminal = require("zxz.terminal")
 local Review = require("zxz.review")
 local Worktree = require("zxz.worktree")
@@ -46,9 +47,15 @@ function M.start(opts)
 end
 
 function M.review()
-  local state = Review.open_current()
-  if not state then
-    vim.notify("zxz: no active agent terminal — :ZxzWtStart first", vim.log.levels.WARN)
+  Review.open()
+end
+
+---@param opts? { provider?: string }
+function M.chat(opts)
+  opts = opts or {}
+  local wt, err = Chat.open(opts)
+  if not wt then
+    vim.notify("zxz: " .. tostring(err), vim.log.levels.ERROR)
   end
 end
 
@@ -150,7 +157,14 @@ function M.setup(opts)
   })
   cmd("Review", function()
     M.review()
-  end, { desc = "zxz: review current agent worktree" })
+  end, { desc = "zxz: review an agent worktree (picker if more than one)" })
+  cmd("Chat", function(c)
+    local provider = c.fargs and c.fargs[1] or nil
+    M.chat({ provider = provider })
+  end, {
+    nargs = "?",
+    desc = "zxz: open agentic.nvim chat in a fresh worktree (optional provider)",
+  })
   cmd("List", function()
     M.list()
   end, { desc = "zxz: list agent terminals" })
