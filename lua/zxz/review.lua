@@ -7,9 +7,8 @@
 ---changed files on the left, side-by-side diff for the selected file on the
 ---right.
 ---
----Aborting: `:Git merge --abort` (fugitive) or the Neogit equivalent, or
----`git merge --abort` from any shell. We don't wrap that either; it's one
----typed command and lives in the user's git vocabulary.
+---Closing with `q` aborts the temporary merge if it is still in progress, so
+---the main worktree is free for future reviews or normal merge work.
 
 local Worktree = require("zxz.worktree")
 
@@ -71,10 +70,50 @@ local function changed_files(repo)
   return files, nil
 end
 
+---@param repo string
+---@return boolean
+local function merge_in_progress(repo)
+  vim.fn.system({
+    "git",
+    "-C",
+    repo,
+    "rev-parse",
+    "-q",
+    "--verify",
+    "MERGE_HEAD",
+  })
+  return vim.v.shell_error == 0
+end
+
+---@param repo string
+---@return boolean ok
+---@return string? err
+local function abort_merge(repo)
+  if not merge_in_progress(repo) then
+    return true, nil
+  end
+  local out = vim.fn.system({
+    "git",
+    "-C",
+    repo,
+    "merge",
+    "--abort",
+  })
+  if vim.v.shell_error ~= 0 then
+    return false, out
+  end
+  return true, nil
+end
+
 ---@param buf integer
 ---@param state table
 local function map_close(buf, state)
   vim.keymap.set("n", "q", function()
+    local ok, err = abort_merge(state.repo)
+    if not ok then
+      vim.notify("zxz.review: could not abort merge: " .. tostring(err), vim.log.levels.ERROR)
+      return
+    end
     if vim.api.nvim_tabpage_is_valid(state.tab) then
       vim.api.nvim_set_current_tabpage(state.tab)
       vim.cmd("tabclose")

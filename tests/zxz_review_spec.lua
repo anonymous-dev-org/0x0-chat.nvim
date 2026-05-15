@@ -115,6 +115,9 @@ describe("zxz.review.open", function()
     assert.equals(1, close_map.buffer)
     close_map.callback()
     assert.equals(tabs_before, vim.fn.tabpagenr("$"))
+
+    vim.fn.system({ "git", "-C", repo, "rev-parse", "MERGE_HEAD" })
+    assert.equals(128, vim.v.shell_error)
   end)
 
   it("notifies when there is no active term AND no worktrees to review", function()
