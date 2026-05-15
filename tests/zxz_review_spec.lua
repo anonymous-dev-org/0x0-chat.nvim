@@ -13,7 +13,25 @@ describe("zxz.review.open", function()
 
   local function stub_fugitive()
     diff_calls = {}
+    pcall(vim.api.nvim_del_user_command, "Git")
     pcall(vim.api.nvim_del_user_command, "Gvdiffsplit")
+    vim.api.nvim_create_user_command("Git", function(opts)
+      local args = opts.args or ""
+      if args ~= "" then
+        return
+      end
+      local buf = vim.api.nvim_create_buf(false, true)
+      vim.api.nvim_win_set_buf(0, buf)
+      vim.bo[buf].buftype = "nofile"
+      vim.bo[buf].filetype = "fugitive"
+      vim.api.nvim_buf_set_lines(buf, 0, -1, false, {
+        "Head: main",
+        "Help: g?",
+        "",
+        "Staged",
+        "M a.txt",
+      })
+    end, { nargs = "*" })
     vim.api.nvim_create_user_command("Gvdiffsplit", function(opts)
       diff_calls[#diff_calls + 1] = {
         bang = opts.bang,
@@ -87,7 +105,7 @@ describe("zxz.review.open", function()
     assert.equals(128, vim.v.shell_error)
   end)
 
-  it("opens a full review tab with file list and fugitive diff splits", function()
+  it("opens a full review tab with Fugitive status and diff splits", function()
     local tabs_before = vim.fn.tabpagenr("$")
 
     Review.open({ worktree = wt })
@@ -99,7 +117,7 @@ describe("zxz.review.open", function()
     local list_win
     for _, win in ipairs(vim.api.nvim_tabpage_list_wins(0)) do
       local buf = vim.api.nvim_win_get_buf(win)
-      if vim.bo[buf].filetype == "zxzreview" then
+      if vim.bo[buf].filetype == "fugitive" then
         list_win = win
         break
       end

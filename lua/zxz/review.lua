@@ -4,11 +4,12 @@
 ---worktree. That stages every committed turn from the agent branch as a real
 ---git merge state — index populated, MERGE_HEAD set, conflict markers inserted
 ---where needed — and then we open a dedicated full-tab Fugitive review layout:
----changed files on the left, side-by-side diff for the selected file on the
----right.
+---Fugitive status on the left, side-by-side diff for the selected file on the
+---right. Fugitive owns staging, hunk operations, and the final merge commit.
 ---
 ---Closing with `q` aborts the temporary merge if it is still in progress, so
----the main worktree is free for future reviews or normal merge work.
+---the main worktree is free for future reviews or normal merge work. To accept
+---the review, use Fugitive's `cc` from the status pane or `:Git commit`.
 
 local Worktree = require("zxz.worktree")
 
@@ -162,18 +163,12 @@ local function open_file_diff(state, file)
   vim.api.nvim_set_current_win(file_win)
 end
 
----@param state table
-local function select_current_file(state)
-  local row = vim.api.nvim_win_get_cursor(state.list_win)[1] - state.header_lines
-  open_file_diff(state, state.files[row])
-end
-
 ---@param repo string
 ---@param wt zxz.Worktree
 ---@return boolean ok
 ---@return string? err
 local function open_review_tab(repo, wt)
-  if vim.fn.exists(":Gvdiffsplit") ~= 2 then
+  if vim.fn.exists(":Git") ~= 2 or vim.fn.exists(":Gvdiffsplit") ~= 2 then
     return false, "vim-fugitive is required for the review diff layout"
   end
 
@@ -184,52 +179,25 @@ local function open_review_tab(repo, wt)
 
   vim.cmd("tabnew")
   vim.cmd("lcd " .. vim.fn.fnameescape(repo))
+  vim.cmd("Git")
   local state = {
     repo = repo,
     worktree = wt,
     files = files,
-    header_lines = 4,
     tab = vim.api.nvim_get_current_tabpage(),
     list_win = vim.api.nvim_get_current_win(),
   }
 
-  local buf = vim.api.nvim_create_buf(false, true)
-  vim.api.nvim_win_set_buf(state.list_win, buf)
-  vim.bo[buf].buftype = "nofile"
-  vim.bo[buf].bufhidden = "wipe"
-  vim.bo[buf].filetype = "zxzreview"
-  vim.bo[buf].modifiable = true
-
-  local lines = {
-    "0x0 Review",
-    wt.branch .. " -> " .. repo,
-    "q close  <CR> diff file",
-    "",
-  }
-  for _, file in ipairs(files) do
-    lines[#lines + 1] = ("%s  %s"):format(file.status, file.path)
-  end
-  if #files == 0 then
-    lines[#lines + 1] = "No changed files"
-  end
-  vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
-  vim.bo[buf].modifiable = false
+  local buf = vim.api.nvim_win_get_buf(state.list_win)
   vim.wo[state.list_win].number = false
   vim.wo[state.list_win].relativenumber = false
   vim.wo[state.list_win].signcolumn = "no"
   vim.wo[state.list_win].wrap = false
-  vim.api.nvim_win_set_width(state.list_win, 36)
+  vim.api.nvim_win_set_width(state.list_win, 42)
 
   map_close(buf, state)
-  vim.keymap.set("n", "<CR>", function()
-    select_current_file(state)
-  end, { buffer = buf, nowait = true, silent = true, desc = "Open zxz review diff" })
-  vim.keymap.set("n", "o", function()
-    select_current_file(state)
-  end, { buffer = buf, nowait = true, silent = true, desc = "Open zxz review diff" })
 
   if #files > 0 then
-    vim.api.nvim_win_set_cursor(state.list_win, { state.header_lines + 1, 0 })
     open_file_diff(state, files[1])
   end
 
