@@ -15,7 +15,6 @@
 ---`git merge --abort` from any shell. We don't wrap that either; it's one
 ---typed command and lives in the user's git vocabulary.
 
-local Terminal = require("zxz.terminal")
 local Worktree = require("zxz.worktree")
 
 local M = {}
@@ -56,19 +55,14 @@ local function open_git_ui()
   return false
 end
 
----Pick a worktree to review. Picks the current terminal's worktree when one
----exists; otherwise prompts via `vim.ui.select` over all live agent worktrees
----(spawned by :ZxzStart or :ZxzChat). Calls `cb(wt)` with the choice, or
----nothing if the user cancelled / nothing to review.
+---Pick a worktree to review. Prompts via `vim.ui.select` over live agent
+---worktrees. Calls `cb(wt)` with the choice, or nothing if the user cancelled
+---or nothing exists to review.
 ---@param cb fun(wt: zxz.Worktree)
 function M.pick(cb)
-  local term = Terminal.current()
-  if term then
-    return cb(term.worktree)
-  end
   local wts = Worktree.list()
   if #wts == 0 then
-    vim.notify("zxz.review: no agent worktrees — :ZxzStart or :ZxzChat first", vim.log.levels.WARN)
+    vim.notify("zxz.review: no agent worktrees — :ZxzChat first", vim.log.levels.WARN)
     return
   end
   if #wts == 1 then

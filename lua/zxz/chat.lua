@@ -3,9 +3,9 @@
 ---Each :ZxzChat creates a fresh worktree, opens a new tabpage, sets the
 ---tabpage-local cwd to that worktree, then calls require("agentic").open().
 ---Agentic is per-tabpage and uses cwd at ACP session creation, so the chat
----is naturally pinned to the worktree. Review is the same flow as for
----:ZxzStart terminals — `:ZxzReview` enumerates `Worktree.list()` and
----merges the picked branch into the user's main worktree.
+---is naturally pinned to the worktree. `:ZxzReview` enumerates
+---`Worktree.list()` and merges the picked branch into the user's main
+---worktree.
 
 local Worktree = require("zxz.worktree")
 
