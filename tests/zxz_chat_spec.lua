@@ -1,4 +1,6 @@
 local helpers = require("tests.helpers")
+local Chat = require("zxz.chat")
+local Review = require("zxz.review")
 local Worktree = require("zxz.worktree")
 
 describe("zxz.chat.open", function()
@@ -19,9 +21,8 @@ describe("zxz.chat.open", function()
         agentic_calls.cwd = vim.fn.getcwd()
       end,
     }
-    package.loaded["agentic.config"] = { provider = nil }
-    -- Force a fresh zxz.chat each test so safe_require picks up the stub.
-    package.loaded["zxz.chat"] = nil
+    package.loaded["agentic.config"] = { provider = nil, hooks = {} }
+    Chat._reset_for_tests()
   end)
 
   after_each(function()
@@ -30,12 +31,11 @@ describe("zxz.chat.open", function()
     end
     package.loaded["agentic"] = orig_loaded_agentic
     package.loaded["agentic.config"] = orig_loaded_config
-    package.loaded["zxz.chat"] = nil
+    Chat._reset_for_tests()
     helpers.cleanup(repo)
   end)
 
   it("creates a worktree and opens agentic with the worktree as cwd", function()
-    local Chat = require("zxz.chat")
     local wt, err = Chat.open()
     assert.is_nil(err)
     assert.is_not_nil(wt)
@@ -46,10 +46,55 @@ describe("zxz.chat.open", function()
   end)
 
   it("propagates the requested provider to agentic.config", function()
-    local Chat = require("zxz.chat")
     local wt = assert(Chat.open({ provider = "claude" }))
     assert.equals("claude", package.loaded["agentic.config"].provider)
     pcall(Worktree.remove, wt)
+  end)
+
+  it("commits each completed agentic turn onto the agent branch", function()
+    local wt = assert(Chat.open())
+    local Config = package.loaded["agentic.config"]
+    assert.is_function(Config.hooks.on_response_complete)
+
+    helpers.write_file(wt.path .. "/a.txt", "turn one\n")
+    Config.hooks.on_response_complete({
+      tab_page_id = vim.api.nvim_get_current_tabpage(),
+      session_id = "s1",
+      success = true,
+    })
+
+    helpers.write_file(wt.path .. "/b.txt", "turn two\n")
+    Config.hooks.on_response_complete({
+      tab_page_id = vim.api.nvim_get_current_tabpage(),
+      session_id = "s1",
+      success = true,
+    })
+
+    local count =
+      vim.fn.system({ "git", "-C", wt.path, "rev-list", "--count", wt.base_ref .. "..HEAD" }):gsub("\n$", "")
+    assert.equals("2", count)
+
+    local status = vim.fn.system({ "git", "-C", wt.path, "status", "--porcelain" })
+    assert.equals("", status)
+    pcall(Worktree.remove, wt)
+  end)
+
+  it("redirects agentic new_session from a managed tab into a fresh worktree", function()
+    local wt1 = assert(Chat.open())
+
+    package.loaded["agentic"].new_session({ provider = "codex" })
+
+    assert.equals(2, agentic_calls.open)
+    assert.equals("codex", package.loaded["agentic.config"].provider)
+
+    local wts = Worktree.list(repo)
+    assert.equals(2, #wts)
+    local branches = {}
+    for _, wt in ipairs(wts) do
+      branches[wt.branch] = true
+      pcall(Worktree.remove, wt)
+    end
+    assert.is_true(branches[wt1.branch])
   end)
 
   it("errors gracefully when agentic.nvim is not installed", function()
@@ -57,7 +102,6 @@ describe("zxz.chat.open", function()
     package.preload["agentic"] = function()
       error("module 'agentic' not found")
     end
-    local Chat = require("zxz.chat")
     local wt, err = Chat.open()
     assert.is_nil(wt)
     assert.is_not_nil(err)
@@ -67,7 +111,6 @@ describe("zxz.chat.open", function()
 end)
 
 describe("zxz.review picker", function()
-  local Review = require("zxz.review")
   local repo
 
   before_each(function()

@@ -41,7 +41,7 @@ describe("zxz.context_share", function()
   end)
 
   it("format_path returns @<relative> for the current buffer", function()
-    vim.cmd("edit " .. repo .. "/src/foo.lua")
+    vim.cmd("noswapfile edit " .. vim.fn.fnameescape(repo .. "/src/foo.lua"))
     assert.equals("@src/foo.lua", Share.format_path())
   end)
 
@@ -52,7 +52,7 @@ describe("zxz.context_share", function()
 
   it("send_path chansends @<file> with newline", function()
     local term = assert(Terminal.start("echobot"))
-    vim.cmd("edit " .. repo .. "/README.md")
+    vim.cmd("noswapfile edit " .. vim.fn.fnameescape(repo .. "/README.md"))
     assert.is_true(Share.send_path({ term = term }))
     local lines = wait_for(term.bufnr, "got:@README.md")
     local ok = false
@@ -65,7 +65,7 @@ describe("zxz.context_share", function()
   end)
 
   it("send_path fails gracefully when no agent term exists", function()
-    vim.cmd("edit " .. repo .. "/README.md")
+    vim.cmd("noswapfile edit " .. vim.fn.fnameescape(repo .. "/README.md"))
     local ok, err = Share.send_path()
     assert.is_false(ok)
     assert.is_truthy(err:match("no active agent"))
@@ -85,7 +85,7 @@ describe("zxz.context_share", function()
 
   it("send_selection formats with L<a>-<b> and fenced selection", function()
     local term = assert(Terminal.start("echobot"))
-    vim.cmd("edit " .. repo .. "/src/foo.lua")
+    vim.cmd("noswapfile edit " .. vim.fn.fnameescape(repo .. "/src/foo.lua"))
     -- Simulate a visual selection over lines 2..2.
     vim.api.nvim_buf_set_mark(0, "<", 2, 0, {})
     vim.api.nvim_buf_set_mark(0, ">", 2, 0, {})

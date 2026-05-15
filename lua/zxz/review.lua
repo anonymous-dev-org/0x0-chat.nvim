@@ -1,10 +1,10 @@
 ---Hand off review of the agent's worktree to the user's git UI.
 ---
----We do exactly one thing: `git merge --no-ff --no-commit <agent-branch>` in
----the user's main worktree. That stages every change the agent made as a
----real git merge state — index populated, MERGE_HEAD set, conflict markers
----inserted where needed — and then we open Neogit (or fugitive) for the
----per-hunk staging / commit / abort flow.
+---We run `git merge --no-ff --no-commit <agent-branch>` in the user's main
+---worktree. That stages every committed turn from the agent branch as a real
+---git merge state — index populated, MERGE_HEAD set, conflict markers inserted
+---where needed — and then we open fugitive (or Neogit) for the per-hunk
+---staging / commit / abort flow.
 ---
 ---This deletes ~660 lines of bespoke review buffer. We were reinventing
 ---staging UIs that those plugins have already polished for years, badly:
@@ -47,7 +47,7 @@ local function stage_branch(wt)
 end
 
 local function open_git_ui()
-  for _, cmd in ipairs({ "Neogit", "Git" }) do
+  for _, cmd in ipairs({ "Git", "Neogit" }) do
     if vim.fn.exists(":" .. cmd) == 2 then
       vim.cmd(cmd)
       return true
@@ -101,6 +101,19 @@ end
 
 ---@param wt zxz.Worktree
 function M._open_for(wt)
+  local dirty, dirty_err = Worktree.is_dirty(wt)
+  if dirty_err then
+    vim.notify("zxz.review: " .. tostring(dirty_err), vim.log.levels.ERROR)
+    return
+  end
+  if dirty then
+    vim.notify(
+      "zxz.review: agent worktree has uncommitted changes; wait for the turn commit before review",
+      vim.log.levels.ERROR
+    )
+    return
+  end
+
   local ok, err = stage_branch(wt)
   if not ok then
     vim.notify("zxz.review: " .. tostring(err), vim.log.levels.ERROR)

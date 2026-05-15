@@ -22,6 +22,8 @@ describe("zxz.review.open", function()
   after_each(function()
     -- Reset any in-progress merge so the after-each Worktree.remove succeeds.
     pcall(vim.fn.system, { "git", "-C", repo, "merge", "--abort" })
+    pcall(vim.api.nvim_del_user_command, "Git")
+    pcall(vim.api.nvim_del_user_command, "Neogit")
     if wt then
       pcall(Worktree.remove, wt)
       wt = nil
@@ -38,6 +40,43 @@ describe("zxz.review.open", function()
     -- Index now reflects the agent's a.txt content (two lines).
     local staged = vim.fn.system({ "git", "-C", repo, "show", ":a.txt" }):gsub("\n$", "")
     assert.equals("one\ntwo", staged)
+  end)
+
+  it("refuses review while the agent worktree has uncommitted changes", function()
+    helpers.write_file(wt.path .. "/a.txt", "one\ntwo\nthree\n")
+
+    local notifications = {}
+    local orig = vim.notify
+    vim.notify = function(msg, lvl)
+      table.insert(notifications, { msg = msg, lvl = lvl })
+    end
+    Review.open({ worktree = wt })
+    vim.notify = orig
+
+    local saw_dirty_notice = false
+    for _, n in ipairs(notifications) do
+      if n.msg:match("uncommitted changes") then
+        saw_dirty_notice = true
+      end
+    end
+    assert.is_true(saw_dirty_notice, vim.inspect(notifications))
+
+    vim.fn.system({ "git", "-C", repo, "rev-parse", "MERGE_HEAD" })
+    assert.equals(128, vim.v.shell_error)
+  end)
+
+  it("opens fugitive when both supported git UIs are available", function()
+    local opened
+    vim.api.nvim_create_user_command("Git", function()
+      opened = "Git"
+    end, {})
+    vim.api.nvim_create_user_command("Neogit", function()
+      opened = "Neogit"
+    end, {})
+
+    Review.open({ worktree = wt })
+
+    assert.equals("Git", opened)
   end)
 
   it("notifies when there is no active term AND no worktrees to review", function()

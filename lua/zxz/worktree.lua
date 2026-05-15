@@ -156,6 +156,52 @@ function M.remove(wt)
 end
 
 ---@param wt zxz.Worktree
+---@param opts? { message?: string }
+---@return boolean ok
+---@return string? err
+---@return boolean committed
+function M.snapshot(wt, opts)
+  opts = opts or {}
+  local status = vim.fn.system({ "git", "-C", wt.path, "status", "--porcelain" })
+  if vim.v.shell_error ~= 0 then
+    return false, status, false
+  end
+  if status == "" then
+    return true, nil, false
+  end
+
+  local out = vim.fn.system({ "git", "-C", wt.path, "add", "-A" })
+  if vim.v.shell_error ~= 0 then
+    return false, out, false
+  end
+
+  out = vim.fn.system({
+    "git",
+    "-C",
+    wt.path,
+    "commit",
+    "-m",
+    opts.message or ("zxz: snapshot agent worktree %s"):format(wt.id),
+  })
+  if vim.v.shell_error ~= 0 then
+    return false, out, false
+  end
+
+  return true, nil, true
+end
+
+---@param wt zxz.Worktree
+---@return boolean dirty
+---@return string? err
+function M.is_dirty(wt)
+  local status, err = run({ "git", "-C", wt.path, "status", "--porcelain" })
+  if err then
+    return false, err
+  end
+  return status ~= "", nil
+end
+
+---@param wt zxz.Worktree
 ---@return string diff "" if no changes
 ---@return string? err
 function M.diff(wt)

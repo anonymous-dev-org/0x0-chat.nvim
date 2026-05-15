@@ -23,12 +23,14 @@ a worktree-per-session discipline:
      git worktree — a new tabpage is opened, tab-local cwd is `tcd`'d to the
      worktree, then `require("agentic").open()` is called. Agentic is
      per-tabpage and uses cwd at ACP session creation, so chat sessions are
-     pinned to their worktree.
+     pinned to their worktree. Every completed Agentic turn commits dirty files
+     as one new commit on the agent branch. Agentic `new_session()` calls from
+     a 0x0-managed chat tab are redirected into a fresh `:ZxzChat` worktree.
    - **`:ZxzReview`** reviews any agent worktree (terminal or chat). If a
      terminal is active in the current buffer, it picks that one; otherwise
      it lists every `zxz/agent-*` worktree via `vim.ui.select` and merges the
      picked branch via `git merge --no-ff --no-commit` into the user's main
-     worktree, then hands off to Neogit/fugitive.
+     worktree, then hands off to fugitive/Neogit.
 
 We **depend on, not fork**, agentic.nvim. Its rich chat UI / session manager
 / permissions / restore live in that plugin; 0x0.nvim only provides the
@@ -59,6 +61,17 @@ truth for chat.
   even live worktrees. Worktrees survive nvim restart — they're just git
   state. **Why:** the user chose this; agent branches are often the only
   record of what happened in a session.
+- **Agentic turns stack commits.** `:ZxzChat` installs an Agentic
+  `on_response_complete` hook. If the worktree is dirty at the end of a turn,
+  `Worktree.snapshot()` creates exactly one normal commit for that turn. Later
+  turns create later commits on the same agent branch. **Why:** the review
+  flow should look like normal git history, not a squash buffer or an
+  uncommitted scratch tree.
+- **New Agentic sessions do not reuse a managed tab's worktree.** From inside
+  a 0x0-managed chat tab, Agentic `new_session()` is redirected to `:ZxzChat`
+  so the new session is created in a new tab and a new worktree. **Why:**
+  Agentic sessions bind to cwd at creation time; reusing the tab would silently
+  put two sessions in one agent branch.
 
 ---
 
@@ -112,9 +125,9 @@ user's vocabulary — do not change without coordinating with the user):
 `:ZxzReview` picks a worktree (current terminal's, or `vim.ui.select` over
 `Worktree.list()` when multiple `zxz/agent-*` worktrees exist — terminal
 sessions and chat sessions are in the same list because they live in the
-same branch namespace), then runs `git merge --no-ff --no-commit
-<agent-branch>` in the user's main worktree and opens whichever git UI is
-loaded — Neogit first, fugitive's `:Git` second, or notifies the user if
+same branch namespace), refuses dirty worktrees, then runs `git merge --no-ff
+--no-commit <agent-branch>` in the user's main worktree and opens whichever git
+UI is loaded — fugitive's `:Git` first, Neogit second, or notifies the user if
 neither is present.
 
 After that, all per-hunk staging, commit-message editing, conflict resolution
@@ -202,7 +215,11 @@ Currently pinned regression tests:
 |---|---|
 | Worktree path canonicalisation | `worktree_spec.lua::"resolves repo_root from inside an agent worktree"` |
 | Three-dot diff is base-vs-branch | `worktree_spec.lua::"diff reports changes made on the agent branch"` |
+| Agentic turn commits stack | `zxz_chat_spec.lua::"commits each completed agentic turn onto the agent branch"` |
+| Agentic new session gets a new worktree | `zxz_chat_spec.lua::"redirects agentic new_session from a managed tab into a fresh worktree"` |
 | Review uses no-ff no-commit merge | `zxz_review_spec.lua::"stages the agent branch via git merge --no-ff --no-commit"` |
+| Review refuses dirty worktrees | `zxz_review_spec.lua::"refuses review while the agent worktree has uncommitted changes"` |
+| Review prefers fugitive | `zxz_review_spec.lua::"opens fugitive when both supported git UIs are available"` |
 | Conflict path leaves index populated | `zxz_review_spec.lua::"survives a merge with conflicts ..."` |
 | Review picker over multiple worktrees | `zxz_chat_spec.lua::"pick() invokes vim.ui.select when multiple worktrees exist"` |
 | Chat opens agentic with worktree cwd | `zxz_chat_spec.lua::"creates a worktree and opens agentic with the worktree as cwd"` |
