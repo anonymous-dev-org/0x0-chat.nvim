@@ -1,4 +1,4 @@
----0x0.nvim: workflow shell around agentic.nvim + vim-fugitive.
+---0x0.nvim: workflow shell around agentic.nvim and git worktree review.
 
 local M = {}
 

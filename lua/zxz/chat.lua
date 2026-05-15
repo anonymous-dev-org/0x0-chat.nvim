@@ -3,9 +3,8 @@
 ---Each :ZxzChat creates a fresh worktree, opens a new tabpage, sets the
 ---tabpage-local cwd to that worktree, then calls require("agentic").open().
 ---Agentic is per-tabpage and uses cwd at ACP session creation, so the chat
----is naturally pinned to the worktree. `:ZxzReview` enumerates
----`Worktree.list()` and merges the picked branch into the user's main
----worktree.
+---is naturally pinned to the worktree. Review feedback reopens the same
+---worktree so the agent can add another commit to the same branch.
 
 local Worktree = require("zxz.worktree")
 
@@ -139,22 +138,40 @@ local function install_agentic_worktree_guard(agentic)
   agentic_patched = true
 end
 
----@param opts? { provider?: string, base?: string }
+---@param prompt string
+local function submit_prompt(prompt)
+  local SessionRegistry = safe_require("agentic.session_registry")
+  if not SessionRegistry or type(SessionRegistry.get_session_for_tab_page) ~= "function" then
+    vim.fn.setreg("+", prompt)
+    vim.notify("zxz.chat: copied feedback prompt; paste it into Agentic", vim.log.levels.WARN)
+    return
+  end
+
+  local submitted = false
+  SessionRegistry.get_session_for_tab_page(nil, function(session)
+    if session and type(session._handle_input_submit) == "function" then
+      session:_handle_input_submit(prompt)
+      submitted = true
+    end
+  end)
+
+  if not submitted then
+    vim.fn.setreg("+", prompt)
+    vim.notify("zxz.chat: copied feedback prompt; paste it into Agentic", vim.log.levels.WARN)
+  end
+end
+
+---@param wt zxz.Worktree
+---@param opts { provider?: string, prompt?: string }
 ---@return zxz.Worktree|nil
 ---@return string? err
-function M.open(opts)
-  opts = opts or {}
+local function open_in_worktree(wt, opts)
   local agentic, rerr = safe_require("agentic")
   if not agentic then
     return nil, "agentic.nvim is not installed (" .. tostring(rerr) .. ")"
   end
   install_agentic_worktree_guard(agentic)
   install_permission_sound()
-
-  local wt, werr = Worktree.create({ base = opts.base, agent = "agentic" })
-  if not wt then
-    return nil, werr
-  end
 
   vim.cmd("tabnew")
   -- Tabpage-local cwd ⇒ agentic's per-tabpage SessionManager picks this up
@@ -175,13 +192,42 @@ function M.open(opts)
     install_agentic_hooks(Config)
   end
 
-  local ok, err = pcall(agentic.open)
+  local ok, err = pcall(agentic.open, { auto_add_to_context = false, focus_prompt = true })
   if not ok then
     worktrees_by_tab[vim.api.nvim_get_current_tabpage()] = nil
     return nil, "agentic.open failed: " .. tostring(err)
   end
 
+  if opts.prompt and opts.prompt ~= "" then
+    submit_prompt(opts.prompt)
+  end
+
   return wt, nil
+end
+
+---@param opts? { provider?: string, base?: string }
+---@return zxz.Worktree|nil
+---@return string? err
+function M.open(opts)
+  opts = opts or {}
+  local agentic, rerr = safe_require("agentic")
+  if not agentic then
+    return nil, "agentic.nvim is not installed (" .. tostring(rerr) .. ")"
+  end
+
+  local wt, werr = Worktree.create({ base = opts.base, agent = "agentic" })
+  if not wt then
+    return nil, werr
+  end
+  return open_in_worktree(wt, opts)
+end
+
+---@param wt zxz.Worktree
+---@param opts? { provider?: string, prompt?: string }
+---@return zxz.Worktree|nil
+---@return string? err
+function M.open_existing(wt, opts)
+  return open_in_worktree(wt, opts or {})
 end
 
 function M._reset_for_tests()

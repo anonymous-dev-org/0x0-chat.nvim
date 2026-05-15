@@ -9,6 +9,7 @@ describe("zxz.chat.open", function()
   local orig_loaded_agentic
   local orig_loaded_config
   local orig_loaded_permission_manager
+  local orig_loaded_session_registry
   local orig_loaded_sound
   local sounds
 
@@ -20,6 +21,7 @@ describe("zxz.chat.open", function()
     orig_loaded_agentic = package.loaded["agentic"]
     orig_loaded_config = package.loaded["agentic.config"]
     orig_loaded_permission_manager = package.loaded["agentic.ui.permission_manager"]
+    orig_loaded_session_registry = package.loaded["agentic.session_registry"]
     orig_loaded_sound = package.loaded["zxz.sound"]
     package.loaded["agentic"] = {
       open = function()
@@ -32,6 +34,15 @@ describe("zxz.chat.open", function()
       add_request = function(_, request, callback)
         agentic_calls.permission_request = request
         agentic_calls.permission_callback = callback
+      end,
+    }
+    package.loaded["agentic.session_registry"] = {
+      get_session_for_tab_page = function(_, callback)
+        callback({
+          _handle_input_submit = function(_, prompt)
+            agentic_calls.prompt = prompt
+          end,
+        })
       end,
     }
     package.loaded["zxz.sound"] = {
@@ -49,6 +60,7 @@ describe("zxz.chat.open", function()
     package.loaded["agentic"] = orig_loaded_agentic
     package.loaded["agentic.config"] = orig_loaded_config
     package.loaded["agentic.ui.permission_manager"] = orig_loaded_permission_manager
+    package.loaded["agentic.session_registry"] = orig_loaded_session_registry
     package.loaded["zxz.sound"] = orig_loaded_sound
     Chat._reset_for_tests()
     helpers.cleanup(repo)
@@ -67,6 +79,19 @@ describe("zxz.chat.open", function()
   it("propagates the requested provider to agentic.config", function()
     local wt = assert(Chat.open({ provider = "claude" }))
     assert.equals("claude", package.loaded["agentic.config"].provider)
+    pcall(Worktree.remove, wt)
+  end)
+
+  it("opens an existing worktree and submits a feedback prompt", function()
+    local wt = assert(Worktree.create({ cwd = repo }))
+
+    local reopened, err = Chat.open_existing(wt, { prompt = "please fix the selected hunk" })
+
+    assert.is_nil(err)
+    assert.equals(wt.path, reopened.path)
+    assert.equals(1, agentic_calls.open)
+    assert.equals(vim.fn.resolve(wt.path), vim.fn.resolve(agentic_calls.cwd))
+    assert.equals("please fix the selected hunk", agentic_calls.prompt)
     pcall(Worktree.remove, wt)
   end)
 

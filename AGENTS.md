@@ -8,12 +8,11 @@ line tying it to an observable failure mode.
 
 ## 1. What this plugin is
 
-0x0.nvim is a **workflow plugin** around two external Neovim plugins:
+0x0.nvim is a **workflow plugin** around agentic.nvim and git:
 
 - **agentic.nvim** owns the chat UI, ACP session manager, permissions, provider
   switching, and restore behavior.
-- **vim-fugitive** owns review, staging, conflict resolution, commit messages,
-  and merge abort.
+- **git** owns worktrees, stacked agent commits, and final merge commits.
 
 0x0.nvim only owns the workflow around those tools:
 
@@ -24,13 +23,15 @@ line tying it to an observable failure mode.
 - Agentic `new_session()` calls from a 0x0-managed chat tab are redirected into
   a fresh `:ZxzChat` worktree.
 - **`:ZxzReview`** lets the user pick an agent worktree, refuses dirty
-  worktrees, runs `git merge --no-ff --no-commit <agent-branch>` in the main
-  worktree, and opens Fugitive (`:Git`) for review.
+  worktrees, opens a full-tab review view, accepts selected hunks/files into a
+  temporary review worktree, and only merges accepted changes into main when
+  the user presses `m`.
 - **`:ZxzCleanup [merged]`** removes agent worktrees.
 
 Forbidden: re-adding a 0x0-owned chat panel, ACP session manager, permission
-ledger, inline edit UI, terminal-agent launcher, context-share helper, or custom
-review buffer. Fix rich chat behavior in agentic.nvim; use Fugitive for review.
+ledger, inline edit UI, terminal-agent launcher, or context-share helper. Fix
+rich chat behavior in agentic.nvim; keep 0x0 review focused on the accept /
+feedback / merge workflow.
 
 ---
 
@@ -60,28 +61,21 @@ review buffer. Fix rich chat behavior in agentic.nvim; use Fugitive for review.
 
 ## 3. Review
 
-`lua/zxz/review.lua` is intentionally not a review UI.
+`lua/zxz/review.lua` owns the minimal human review UI.
 
-`:ZxzReview` selects a `zxz/agent-*` worktree via `vim.ui.select`, refuses dirty
-worktrees, then runs:
+`:ZxzReview` selects a `zxz/agent-*` worktree via `vim.ui.select` and refuses
+dirty worktrees. It creates/reuses a temporary `zxz/review-*` worktree at the
+agent branch's `base_ref`. Review never sets `MERGE_HEAD` in the main worktree.
 
-```sh
-git merge --no-ff --no-commit <agent-branch>
-```
+Review controls:
 
-in the user's main worktree. The merge state is real git state: `MERGE_HEAD` is
-set, conflicts are real conflict markers, and committing from Fugitive creates
-the final merge commit.
-
-Use Fugitive for review:
-
-- `s` / `u` to stage and unstage
-- `cc` to commit
-- `dv` for 3-way diff
-- `:Git merge --abort` to abort
-
-Neogit is an optional fallback if Fugitive is not loaded. Shell fallback is
-standard `git status`, `git add -p`, `git commit`, and `git merge --abort`.
+- `A` accepts all remaining proposed changes into the review branch.
+- `a` on the file list accepts the selected file.
+- `a` in the diff pane accepts only the hunk under the cursor.
+- `f` sends feedback plus the selected diff context back to the same agent
+  worktree; the agent can add another normal commit to the agent branch.
+- `m` merges accepted review-branch commits into main with `git merge --no-ff`.
+- `q` closes review only. There is no main-worktree merge state to abort.
 
 ---
 
@@ -100,9 +94,11 @@ Currently pinned regression tests:
 | Three-dot diff is base-vs-branch | `worktree_spec.lua::"diff reports changes made on the agent branch"` |
 | Agentic turn commits stack | `zxz_chat_spec.lua::"commits each completed agentic turn onto the agent branch"` |
 | Agentic new session gets a new worktree | `zxz_chat_spec.lua::"redirects agentic new_session from a managed tab into a fresh worktree"` |
-| Review uses no-ff no-commit merge | `zxz_review_spec.lua::"stages the agent branch via git merge --no-ff --no-commit"` |
+| Review does not start a main-worktree merge | `zxz_review_spec.lua::"opens a full review tab without starting a merge in main"` |
+| Review accept-all then merge | `zxz_review_spec.lua::"accepts all proposed changes into the review branch, then merges them into main"` |
+| Review accepts one file | `zxz_review_spec.lua::"accepts one file without accepting the rest of the proposal"` |
+| Review accepts one hunk | `zxz_review_spec.lua::"accepts only the hunk under the cursor from the diff pane"` |
+| Review feedback targets same agent worktree | `zxz_review_spec.lua::"sends feedback to the same agent worktree"` |
 | Review refuses dirty worktrees | `zxz_review_spec.lua::"refuses review while the agent worktree has uncommitted changes"` |
-| Review prefers Fugitive | `zxz_review_spec.lua::"opens fugitive when both supported git UIs are available"` |
-| Conflict path leaves index populated | `zxz_review_spec.lua::"survives a merge with conflicts ..."` |
 | Review picker over multiple worktrees | `zxz_chat_spec.lua::"pick() invokes vim.ui.select when multiple worktrees exist"` |
 | Chat opens Agentic with worktree cwd | `zxz_chat_spec.lua::"creates a worktree and opens agentic with the worktree as cwd"` |
