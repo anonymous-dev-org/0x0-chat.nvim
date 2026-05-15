@@ -2,7 +2,7 @@
 
 local M = {}
 
-M.default_sound = "/System/Library/Sounds/Glass.aiff"
+M.default_sound = "/System/Library/Sounds/Blow.aiff"
 
 ---@param _reason? string
 function M.play(_reason)
