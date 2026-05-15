@@ -1,88 +1,87 @@
 local InlineEdit = require("zxz.edit.inline_edit")
+local Agents = require("zxz.agents")
 
-describe("inline_edit", function()
-  local bufnr
-
-  before_each(function()
-    bufnr = vim.api.nvim_create_buf(false, true)
-    vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, {
-      "line 1",
-      "line 2",
-      "line 3",
-      "line 4",
-      "line 5",
+describe("zxz.edit.inline_edit.build_prompt", function()
+  it("emits a single-string prompt with fenced region and instruction", function()
+    local p = InlineEdit.build_prompt({
+      filename = "/tmp/foo.lua",
+      filetype = "lua",
+      region = "local x = 1",
+      range = { start_line = 5, end_line = 5 },
+      instruction = "rename x to count",
     })
-    vim.api.nvim_set_current_buf(bufnr)
-    vim.api.nvim_win_set_cursor(0, { 3, 0 })
-    vim.bo[bufnr].filetype = "" -- no parser → forces line fallback
+    assert.is_truthy(p:match("/tmp/foo%.lua"))
+    assert.is_truthy(p:match("lua"))
+    assert.is_truthy(p:match("Region to edit %(lines 5%-5%)"))
+    assert.is_truthy(p:match("rename x to count"))
+    assert.is_truthy(p:match("```lua\nlocal x = 1\n```"))
+    assert.is_truthy(p:match("ONLY"))
   end)
 
-  after_each(function()
-    if vim.api.nvim_buf_is_valid(bufnr) then
-      vim.api.nvim_buf_delete(bufnr, { force = true })
-    end
+  it("handles missing filetype/filename gracefully", function()
+    local p = InlineEdit.build_prompt({
+      filename = "",
+      filetype = "",
+      region = "hi",
+      range = { start_line = 1, end_line = 1 },
+      instruction = "make it loud",
+    })
+    assert.is_truthy(p:match("<scratch>"))
+    assert.is_truthy(p:match("plain"))
+  end)
+end)
+
+describe("zxz.edit.inline_edit.clean_response", function()
+  it("strips a wrapping ```lang ... ``` fence", function()
+    local cleaned = InlineEdit.clean_response("```lua\nlocal x = 2\nreturn x\n```\n")
+    assert.equals("local x = 2\nreturn x", cleaned)
   end)
 
-  it("falls back to current line when no parser is available", function()
-    local scope = InlineEdit._resolve_scope(bufnr, "n", nil)
-    assert.are.equal("line", scope.scope_kind)
-    assert.are.equal(3, scope.start_line)
-    assert.are.equal(3, scope.end_line)
-    assert.are.equal(1, #scope.lines)
-    assert.are.equal("line 3", scope.lines[1])
+  it("leaves nested fences intact", function()
+    local input = "outer\n```\ninner\n```\ntail"
+    assert.equals(input, InlineEdit.clean_response(input))
   end)
 
-  it("uses the visual range when provided", function()
-    local scope = InlineEdit._resolve_scope(bufnr, "v", { start_line = 2, end_line = 4 })
-    assert.are.equal("selection", scope.scope_kind)
-    assert.are.equal(2, scope.start_line)
-    assert.are.equal(4, scope.end_line)
-    assert.are.equal(3, #scope.lines)
+  it("trims surrounding blank lines", function()
+    assert.equals("hello", InlineEdit.clean_response("\n\nhello\n\n"))
+  end)
+end)
+
+describe("zxz.edit.inline_edit.invoke_agent", function()
+  before_each(function()
+    -- Fake "agent" that just cats stdin → stdout. Verifies the prompt round-trips.
+    Agents.register("echobot", {
+      cmd = { "cat" },
+      headless_cmd = { "cat" },
+    })
   end)
 
-  it("formats the prompt per the A1 template", function()
-    local scope = {
-      rel_path = "foo/bar.lua",
-      start_line = 10,
-      end_line = 12,
-      filetype = "lua",
-      scope_kind = "function",
-      scope_name = "M.greet",
-      lines = { "function M.greet(n)", "  return 'hi ' .. n", "end" },
-    }
-    local prompt = InlineEdit._build_prompt(scope, "make it shout")
-    assert.is_truthy(prompt:find("Target file: foo/bar.lua", 1, true))
-    assert.is_truthy(prompt:find("Range: lines 10-12 (function: M.greet)", 1, true))
-    assert.is_truthy(prompt:find("```lua", 1, true))
-    assert.is_truthy(prompt:find("function M.greet(n)", 1, true))
-    assert.is_truthy(prompt:find("Constraints:", 1, true))
-    assert.is_truthy(prompt:find("Instruction: make it shout", 1, true))
+  it("captures stdout from the headless agent and runs the callback", function()
+    local got_text, got_err
+    InlineEdit.invoke_agent("echobot", "hello\nworld", function(text, err)
+      got_text = text
+      got_err = err
+    end)
+    vim.wait(2000, function()
+      return got_text ~= nil or got_err ~= nil
+    end)
+    assert.is_nil(got_err)
+    assert.equals("hello\nworld", got_text)
   end)
 
-  it("includes diff hunk context for deletion-heavy edits", function()
-    local scope = {
-      rel_path = "foo/bar.lua",
-      start_line = 10,
-      end_line = 10,
-      filetype = "lua",
-      scope_kind = "selection",
-      scope_name = "lines 10-10",
-      lines = { "after()" },
-      hunk_context = {
-        old_start = 10,
-        old_count = 2,
-        new_start = 10,
-        new_count = 0,
-        diff_lines = {
-          "@@ -10,2 +10,0 @@",
-          "-old()",
-          "-gone()",
-        },
-      },
-    }
-    local prompt = InlineEdit._build_prompt(scope, "rework this deletion")
-    assert.is_truthy(prompt:find("Related diff hunk:", 1, true))
-    assert.is_truthy(prompt:find("-gone()", 1, true))
-    assert.is_truthy(prompt:find("deleted%-only hunk", 1))
+  it("reports an error when the agent CLI is missing", function()
+    Agents.register("nope", {
+      cmd = { "does-not-exist-zxz" },
+      headless_cmd = { "does-not-exist-zxz" },
+    })
+    local got_err
+    InlineEdit.invoke_agent("nope", "x", function(_, err)
+      got_err = err
+    end)
+    vim.wait(200, function()
+      return got_err ~= nil
+    end)
+    assert.is_truthy(got_err)
+    assert.is_truthy(got_err:match("not on PATH"))
   end)
 end)

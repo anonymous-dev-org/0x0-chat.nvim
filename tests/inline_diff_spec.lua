@@ -1,285 +1,78 @@
-local helpers = require("tests.helpers")
-local Checkpoint = require("zxz.core.checkpoint")
-local InlineDiff = require("zxz.edit.inline_diff")
+local Diff = require("zxz.edit.inline_diff")
 
-local function fixture(diff)
-  return InlineDiff.parse(diff)
+local function set_buf(lines)
+  local b = vim.api.nvim_create_buf(false, true)
+  vim.api.nvim_buf_set_lines(b, 0, -1, false, lines)
+  vim.api.nvim_set_current_buf(b)
+  return b
 end
 
-describe("inline_diff.parse", function()
-  it("parses a single hunk modification", function()
-    local files = fixture([[
-diff --git a/src/a.lua b/src/a.lua
-index 0000..1111 100644
---- a/src/a.lua
-+++ b/src/a.lua
-@@ -1,3 +1,3 @@
- keep
--old
-+new
- tail
-]])
-    local f = files["src/a.lua"]
-    assert.is_truthy(f)
-    assert.are.equal("modify", f.type)
-    assert.are.equal(1, #f.hunks)
-    local h = f.hunks[1]
-    assert.are.same({ "old" }, h.old_lines)
-    assert.are.same({ "new" }, h.new_lines)
-    assert.are.same({ "keep", "old", "tail" }, h.old_block)
-    assert.are.same({ "keep", "new", "tail" }, h.new_block)
-    assert.are.equal(1, h.old_start)
-    assert.are.equal(3, h.old_count)
-    assert.are.equal(1, h.new_start)
-    assert.are.equal(3, h.new_count)
+describe("zxz.edit.inline_diff.compute_hunks", function()
+  it("emits a single replacement hunk for a one-line change", function()
+    local hunks = Diff.compute_hunks("one\ntwo\nthree\n", "one\nTWO\nthree\n", { start_line = 1, end_line = 3 })
+    assert.equals(1, #hunks)
+    assert.equals(2, hunks[1].old_start)
+    assert.equals(1, hunks[1].old_count)
+    assert.same({ "TWO" }, hunks[1].new_lines)
   end)
 
-  it("parses multi-hunk diffs", function()
-    local files = fixture([[
-diff --git a/src/a.lua b/src/a.lua
---- a/src/a.lua
-+++ b/src/a.lua
-@@ -1,2 +1,2 @@
--aa
-+AA
- bb
-@@ -10,2 +10,2 @@
- cc
--dd
-+DD
-]])
-    local f = files["src/a.lua"]
-    assert.are.equal(2, #f.hunks)
-    assert.are.same({ "aa" }, f.hunks[1].old_lines)
-    assert.are.same({ "AA" }, f.hunks[1].new_lines)
-    assert.are.equal(10, f.hunks[2].new_start)
-    assert.are.same({ "DD" }, f.hunks[2].new_lines)
+  it("handles a pure insertion (old_count == 0)", function()
+    local hunks = Diff.compute_hunks("one\ntwo\n", "one\nbetween\ntwo\n", { start_line = 1, end_line = 2 })
+    assert.equals(1, #hunks)
+    assert.equals(0, hunks[1].old_count)
+    assert.same({ "between" }, hunks[1].new_lines)
   end)
 
-  it("flags new files with /dev/null source", function()
-    local files = fixture([[
-diff --git a/new.txt b/new.txt
-new file mode 100644
---- /dev/null
-+++ b/new.txt
-@@ -0,0 +1,1 @@
-+hello
-]])
-    local f = files["new.txt"]
-    assert.are.equal("add", f.type)
-    assert.are.same({}, f.hunks[1].old_lines)
-    assert.are.same({ "hello" }, f.hunks[1].new_lines)
+  it("handles a pure deletion (new_count == 0)", function()
+    local hunks = Diff.compute_hunks("a\nb\nc\n", "a\nc\n", { start_line = 1, end_line = 3 })
+    assert.equals(1, #hunks)
+    assert.equals(1, hunks[1].old_count)
+    assert.same({}, hunks[1].new_lines)
   end)
 
-  it("flags deleted files", function()
-    local files = fixture([[
-diff --git a/gone.txt b/gone.txt
-deleted file mode 100644
---- a/gone.txt
-+++ /dev/null
-@@ -1,1 +0,0 @@
--byebye
-]])
-    local f = files["gone.txt"]
-    assert.are.equal("delete", f.type)
-    assert.are.same({ "byebye" }, f.hunks[1].old_lines)
-  end)
-
-  it("returns an empty table for blank input", function()
-    assert.are.same({}, InlineDiff.parse(""))
-    assert.are.same({}, InlineDiff.parse(nil))
-  end)
-
-  it("handles single-line counts (omitted ,N form)", function()
-    local files = fixture([[
-diff --git a/x b/x
---- a/x
-+++ b/x
-@@ -5 +5 @@
--x
-+X
-]])
-    local h = files["x"].hunks[1]
-    assert.are.equal(1, h.old_count)
-    assert.are.equal(1, h.new_count)
+  it("offsets hunks by range.start_line", function()
+    local hunks = Diff.compute_hunks("x\ny\n", "x\nY\n", { start_line = 10, end_line = 11 })
+    assert.equals(11, hunks[1].old_start)
   end)
 end)
 
-describe("inline_diff hunk navigation", function()
-  local bufnr
-
-  local function setup_buf(lines, file)
-    bufnr = vim.api.nvim_create_buf(false, true)
-    vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, lines)
-    vim.api.nvim_set_current_buf(bufnr)
-    InlineDiff.attach(bufnr, file, nil)
-  end
-
-  after_each(function()
-    if bufnr and vim.api.nvim_buf_is_valid(bufnr) then
-      InlineDiff.detach(bufnr)
-      vim.api.nvim_buf_delete(bufnr, { force = true })
-    end
+describe("zxz.edit.inline_diff.render+apply", function()
+  it("renders extmarks for each hunk", function()
+    local b = set_buf({ "one", "two", "three" })
+    Diff.render(b, { start_line = 1, end_line = 3 }, "one\nTWO\nthree")
+    local marks = vim.api.nvim_buf_get_extmarks(b, vim.api.nvim_create_namespace("zxz_inline_diff"), 0, -1, {})
+    assert.is_true(#marks >= 1)
+    Diff.close(Diff.get(b))
   end)
 
-  it("next_hunk advances to the next hunk's first line", function()
-    setup_buf({ "a", "b", "c", "d", "e" }, {
-      path = "x",
-      type = "modify",
-      hunks = {
-        { new_start = 2, new_count = 1, old_lines = {}, new_lines = { "b" } },
-        { new_start = 4, new_count = 1, old_lines = {}, new_lines = { "d" } },
-      },
-    })
-    vim.api.nvim_win_set_cursor(0, { 1, 0 })
-    InlineDiff.next_hunk()
-    assert.are.equal(2, vim.api.nvim_win_get_cursor(0)[1])
-    InlineDiff.next_hunk()
-    assert.are.equal(4, vim.api.nvim_win_get_cursor(0)[1])
+  it("ga (accept_hunk via apply) lands new lines and shifts subsequent hunks", function()
+    local b = set_buf({ "a", "b", "c", "d" })
+    local state = Diff.render(b, { start_line = 1, end_line = 4 }, "a\nB\nc\nD")
+    assert.equals(2, #state.hunks)
+    -- Cursor on first hunk row.
+    vim.api.nvim_win_set_cursor(0, { state.hunks[1].old_start, 0 })
+    vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("ga", true, false, true), "x", false)
+    local buf_lines = vim.api.nvim_buf_get_lines(b, 0, -1, false)
+    assert.same({ "a", "B", "c", "d" }, buf_lines)
+    -- After first accept, line numbers don't shift here (1-for-1), but the
+    -- second hunk should still be marked pending.
+    assert.equals("accepted", state.hunks[1].state)
+    assert.equals("pending", state.hunks[2].state)
   end)
 
-  it("next_hunk wraps around to the first hunk", function()
-    setup_buf({ "a", "b", "c" }, {
-      path = "x",
-      type = "modify",
-      hunks = {
-        { new_start = 2, new_count = 1, old_lines = {}, new_lines = { "b" } },
-      },
-    })
-    vim.api.nvim_win_set_cursor(0, { 3, 0 })
-    InlineDiff.next_hunk()
-    assert.are.equal(2, vim.api.nvim_win_get_cursor(0)[1])
+  it("gA accepts every hunk and closes the overlay", function()
+    local b = set_buf({ "a", "b", "c" })
+    local _ = Diff.render(b, { start_line = 1, end_line = 3 }, "A\nB\nC")
+    vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("gA", true, false, true), "x", false)
+    assert.same({ "A", "B", "C" }, vim.api.nvim_buf_get_lines(b, 0, -1, false))
+    assert.is_nil(Diff.get(b))
   end)
 
-  it("prev_hunk steps back to earlier hunks", function()
-    setup_buf({ "a", "b", "c", "d" }, {
-      path = "x",
-      type = "modify",
-      hunks = {
-        { new_start = 2, new_count = 1, old_lines = {}, new_lines = { "b" } },
-        { new_start = 4, new_count = 1, old_lines = {}, new_lines = { "d" } },
-      },
-    })
-    vim.api.nvim_win_set_cursor(0, { 4, 0 })
-    InlineDiff.prev_hunk()
-    assert.are.equal(2, vim.api.nvim_win_get_cursor(0)[1])
-  end)
-
-  it("returns a prompt-ready reference for the hunk under cursor", function()
-    setup_buf({ "keep", "new", "tail" }, {
-      path = "src/a.lua",
-      type = "modify",
-      hunks = {
-        {
-          old_start = 1,
-          old_count = 3,
-          new_start = 1,
-          new_count = 3,
-          old_lines = { "old" },
-          new_lines = { "new" },
-        },
-      },
-    })
-    vim.api.nvim_win_set_cursor(0, { 2, 0 })
-    local ref = assert(InlineDiff.current_hunk_reference())
-    assert.are.equal("src/a.lua", ref.path)
-    assert.are.same({ "@@ -1,3 +1,3 @@", "-old", "+new" }, ref.lines)
-  end)
-end)
-
-describe("inline_diff accept/reject", function()
-  local bufnr
-
-  local function setup(lines, file)
-    bufnr = vim.api.nvim_create_buf(false, true)
-    vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, lines)
-    vim.api.nvim_set_current_buf(bufnr)
-    InlineDiff.attach(bufnr, file, nil)
-  end
-
-  after_each(function()
-    -- detach_all clears the per-path accepted-signature memo so signatures
-    -- from one test don't filter out hunks attached by the next.
-    InlineDiff.detach_all()
-    if bufnr and vim.api.nvim_buf_is_valid(bufnr) then
-      vim.api.nvim_buf_delete(bufnr, { force = true })
-    end
-  end)
-
-  it("accept_hunk_at_cursor removes the hunk from state without mutating buffer", function()
-    setup({ "keep", "new", "tail" }, {
-      path = "x",
-      type = "modify",
-      hunks = {
-        {
-          new_start = 2,
-          new_count = 1,
-          old_lines = { "old" },
-          new_lines = { "new" },
-        },
-      },
-    })
-    vim.api.nvim_win_set_cursor(0, { 2, 0 })
-    InlineDiff.accept_hunk_at_cursor()
-    assert.are.same({ "keep", "new", "tail" }, vim.api.nvim_buf_get_lines(bufnr, 0, -1, false))
-    -- Detached because the only hunk was accepted.
-    assert.are.same({}, InlineDiff.list_attached())
-  end)
-
-  it("reject_hunk_at_cursor restores old_lines into the buffer", function()
-    setup({ "keep", "new", "tail" }, {
-      path = "x",
-      type = "modify",
-      abspath = "/tmp/zz_inline_reject_test",
-      hunks = {
-        {
-          new_start = 2,
-          new_count = 1,
-          old_lines = { "old" },
-          new_lines = { "new" },
-        },
-      },
-    })
-    vim.api.nvim_win_set_cursor(0, { 2, 0 })
-    -- Avoid the silent! write side effect by clearing the buffer name.
-    vim.api.nvim_buf_set_name(bufnr, "")
-    vim.bo[bufnr].buftype = "nofile"
-    InlineDiff.reject_hunk_at_cursor()
-    assert.are.same({ "keep", "old", "tail" }, vim.api.nvim_buf_get_lines(bufnr, 0, -1, false))
-  end)
-end)
-
-describe("inline_diff streaming refresh", function()
-  local root
-  local bufnr
-
-  after_each(function()
-    InlineDiff.detach_all()
-    if bufnr and vim.api.nvim_buf_is_valid(bufnr) then
-      vim.api.nvim_buf_delete(bufnr, { force = true })
-    end
-    helpers.cleanup(root)
-  end)
-
-  it("debounces refreshes for open buffers without moving the cursor", function()
-    root = vim.loop.fs_realpath(helpers.make_repo({ ["a.txt"] = "old\nsecond\nthird\n" }))
-    local cp = assert(Checkpoint.snapshot(root))
-    bufnr = vim.api.nvim_create_buf(true, false)
-    vim.bo[bufnr].swapfile = false
-    vim.api.nvim_buf_set_name(bufnr, root .. "/a.txt")
-    vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, { "old", "second", "third" })
-    vim.api.nvim_set_current_buf(bufnr)
-    vim.api.nvim_win_set_cursor(0, { 3, 0 })
-    helpers.write_file(root .. "/a.txt", "new\nsecond\nthird\n")
-
-    InlineDiff.refresh_path_streaming(cp, root .. "/a.txt", 1)
-
-    local ok = vim.wait(200, function()
-      return #InlineDiff.list_attached() == 1
-    end, 10)
-    assert.is_true(ok)
-    local attached = InlineDiff.list_attached()
-    assert.are.equal("a.txt", attached[1].path)
-    assert.are.same({ 3, 0 }, vim.api.nvim_win_get_cursor(0))
+  it("gR closes without applying any hunk", function()
+    local b = set_buf({ "x", "y" })
+    Diff.render(b, { start_line = 1, end_line = 2 }, "X\nY")
+    vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("gR", true, false, true), "x", false)
+    assert.same({ "x", "y" }, vim.api.nvim_buf_get_lines(b, 0, -1, false))
+    assert.is_nil(Diff.get(b))
   end)
 end)

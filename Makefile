@@ -13,10 +13,10 @@ test-file:
 		-c "PlenaryBustedFile $(FILE)"
 
 lint:
-	stylua --check lua/ tests/
+	stylua --search-parent-directories --check lua/ tests/
 
 lint-fix:
-	stylua lua/ tests/
+	stylua --search-parent-directories lua/ tests/
 
 clean:
 	rm -rf .cache
