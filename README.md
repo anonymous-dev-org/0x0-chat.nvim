@@ -1,9 +1,8 @@
 # 0x0.nvim
 
-Small editing-tool smoke test.
-
-Workflow plugin for Agentic chat sessions in isolated git worktrees, with a
-small accept-and-merge review flow back into the main worktree.
+Inline ghost-text completion for Neovim, backed by an ACP provider over stdio
+(`codex-acp` by default; `claude-acp`, `claude-agent-acp`, and `gemini-acp` also
+wired up).
 
 ## Install
 
@@ -12,28 +11,21 @@ Example with lazy.nvim:
 ```lua
 {
   "anonymous-dev-org/0x0.nvim",
-  dependencies = {
-    {
-      "carlos-algms/agentic.nvim",
-      opts = {
-        provider = "claude-acp",
+  opts = {
+    complete = {
+      enabled = true,
+      provider = "codex-acp",
+      keymaps = {
+        accept = "<Tab>",
+        dismiss = "<C-]>",
       },
     },
   },
 }
 ```
 
-0x0.nvim deliberately depends on `agentic.nvim` instead of forking its chat UI.
-`:ZxzChat [provider]` creates a fresh git worktree, opens a new tabpage rooted
-there, then starts Agentic in that tab. Every completed Agentic turn commits
-dirty files as one normal commit on the agent branch, so follow-up turns stack
-like regular git history. If Agentic starts a new session from a 0x0-managed
-chat tab, 0x0 redirects it into a fresh worktree.
+Ghost text streams from the configured ACP provider as you type, with caching
+and debouncing. `:ZxzCompleteSettings` opens a live settings buffer.
 
-`:ZxzReview` lets you pick an agent worktree and opens a full-tab review view
-without touching the main worktree. Press `A` to accept all remaining changes,
-`a` on the file list to accept a file, or `a` in the diff pane to accept the
-hunk under the cursor. Accepted changes are committed onto a temporary review
-branch. Press `f` to send feedback back to the same agent worktree, or `m` to
-merge the accepted review branch into main. Press `q` to close review with no
-merge state to abort.
+See `lua/zxz/core/config.lua` for the full default `complete` block (debounce,
+max tokens, filetype excludes, cache, telemetry, per-provider commands).

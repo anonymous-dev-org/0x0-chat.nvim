@@ -1,16 +1,22 @@
----0x0.nvim: workflow shell around agentic.nvim and git worktree review.
+---0x0.nvim: inline ghost-text completion.
+
+local config = require("zxz.core.config")
+local paths = require("zxz.core.paths")
 
 local M = {}
 
 ---@param opts? table
----  - `commands`: passed through to `zxz.commands.setup` (set to `false` to
----    skip user-command + keymap registration)
+---  - `complete`: passed through to `zxz.complete.setup`
 function M.setup(opts)
   opts = opts or {}
+  paths.migrate_legacy()
+  config.setup(opts)
 
-  if opts.commands ~= false then
-    require("zxz.commands").setup(opts.commands or {})
-  end
+  require("zxz.complete").setup(opts.complete)
+
+  vim.api.nvim_create_user_command("ZxzCompleteSettings", function()
+    require("zxz.complete").settings()
+  end, { desc = "zxz: inline completion settings" })
 end
 
 return M
