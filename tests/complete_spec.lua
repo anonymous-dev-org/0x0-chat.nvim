@@ -187,4 +187,52 @@ describe("inline completion", function()
 
     assert.are.equal("function()\n  return 42\nend", ghost.get_text())
   end)
+
+  it("notifies the user when a streamed completion fails", function()
+    local acp_client = require("zxz.core.acp_client")
+    local original = acp_client.stream_completion
+    acp_client.stream_completion = function(provider, request, on_chunk, on_done)
+      on_done({ code = -32000, message = "model not supported on this plan" })
+      return function() end
+    end
+
+    local notifications = {}
+    local original_notify = vim.notify
+    vim.notify = function(msg, level)
+      notifications[#notifications + 1] = { msg = msg, level = level }
+    end
+
+    local complete = require("zxz.complete")
+    local bufnr = vim.api.nvim_create_buf(false, true)
+    vim.api.nvim_set_current_buf(bufnr)
+    vim.bo[bufnr].filetype = "lua"
+    vim.api.nvim_buf_set_name(bufnr, "/tmp/complete-test-error.lua")
+    vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, { "local value = " })
+    vim.wo.virtualedit = "onemore"
+    vim.api.nvim_win_set_cursor(0, { 1, 14 })
+    complete._mode = function()
+      return "i"
+    end
+
+    complete._request_completion()
+    vim.wait(50, function()
+      return #notifications > 0
+    end)
+
+    acp_client.stream_completion = original
+    vim.notify = original_notify
+
+    local saw_error = false
+    for _, entry in ipairs(notifications) do
+      if
+        entry.level == vim.log.levels.WARN
+        and entry.msg:match("0x0 completion failed")
+        and entry.msg:match("model not supported on this plan")
+      then
+        saw_error = true
+        break
+      end
+    end
+    assert.is_true(saw_error)
+  end)
 end)

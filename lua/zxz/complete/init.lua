@@ -7,6 +7,23 @@ local client = require("zxz.core.acp_client")
 local ghost = require("zxz.complete.ghost")
 local debounce = require("zxz.complete.debounce")
 local cache = require("zxz.complete.cache")
+local log = require("zxz.core.log")
+
+local function format_err(err)
+  if err == nil then
+    return "unknown error"
+  end
+  if type(err) == "string" then
+    return err
+  end
+  if type(err) == "table" then
+    if err.message and err.message ~= "" then
+      return tostring(err.message)
+    end
+    return vim.inspect(err)
+  end
+  return tostring(err)
+end
 
 local M = {}
 
@@ -241,6 +258,11 @@ function M._request_completion()
     _abort_fn = nil
 
     if err then
+      local msg = format_err(err)
+      log.warn("complete: stream failed: " .. msg)
+      vim.schedule(function()
+        vim.notify("0x0 completion failed: " .. msg, vim.log.levels.WARN)
+      end)
       return
     end
 
